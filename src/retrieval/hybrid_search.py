@@ -1,5 +1,6 @@
 import json
 import re
+import sys
 from pathlib import Path
 
 import faiss
@@ -8,20 +9,34 @@ from sentence_transformers import SentenceTransformer
 
 
 # ============================================================
+# PROJECT PATH
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+from src.answer_generator import generate_answer
+
+
+# ============================================================
 # CONFIGURATION
 # ============================================================
 
-CLAUSES_FILE = Path("data/clauses.json")
+CLAUSES_FILE = PROJECT_ROOT / "data" / "clauses.json"
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 
-# Semantic threshold
+# Minimum semantic similarity.
 SEMANTIC_THRESHOLD = 0.30
 
-# Final hybrid threshold
+# Minimum hybrid score.
 HYBRID_THRESHOLD = 0.45
 
-# Strong lexical evidence can compensate for lower semantic score
+# Strong lexical evidence can compensate for
+# lower semantic similarity.
 STRONG_BM25_THRESHOLD = 5.0
 STRONG_KEYWORD_THRESHOLD = 0.75
 STRONG_HYBRID_THRESHOLD = 0.60
@@ -89,11 +104,6 @@ def keyword_overlap(question, text):
 # ============================================================
 
 def extract_clause_references(text):
-
-    # Matches:
-    # §2.1.2
-    # §2.4
-    # §10.5
 
     return re.findall(
         r"§\d+(?:\.\d+){1,2}",
@@ -173,6 +183,7 @@ class HybridSearch:
             f"Loaded {len(self.clauses)} policy clauses."
         )
 
+
     # ========================================================
     # SECTION BOOST
     # ========================================================
@@ -199,14 +210,16 @@ class HybridSearch:
             "conditions",
             "excluded",
             "exclusion",
+            "disqualified",
+            "disqualify",
         }
 
         if not any(
             word in question_lower
             for word in eligibility_words
         ):
-
             return 0.0
+
 
         # ----------------------------------------------------
         # Exclusion questions
@@ -227,20 +240,20 @@ class HybridSearch:
 
         if is_exclusion_question:
 
-            # Part 4 is the main exclusion section
+            # Main exclusion clause
+            if clause_id == "§4.1.1":
+                return 0.35
+
+            # Other exclusion clauses
             if clause_id.startswith("§4."):
-
-                if clause_id == "§4.1.1":
-                    return 0.35
-
                 return 0.15
 
-            # Part 2 references exclusions
+            # Part 2 only references exclusion
             if clause_id.startswith("§2."):
-
                 return 0.05
 
             return 0.0
+
 
         # ----------------------------------------------------
         # General eligibility question
@@ -259,23 +272,25 @@ class HybridSearch:
             # Other Part 2 clauses
             return 0.10
 
+
         # ----------------------------------------------------
         # Residence requirements
         # ----------------------------------------------------
 
         if clause_id.startswith("§3."):
-
             return 0.08
+
 
         # ----------------------------------------------------
         # Exclusions
         # ----------------------------------------------------
 
         if clause_id.startswith("§4."):
-
             return 0.08
 
+
         return 0.0
+
 
     # ========================================================
     # SEARCH
@@ -297,6 +312,7 @@ class HybridSearch:
             query_tokens
         )
 
+
         # ----------------------------------------------------
         # 2. Semantic similarity
         # ----------------------------------------------------
@@ -313,6 +329,7 @@ class HybridSearch:
         )
 
         semantic_scores = semantic_scores[0]
+
 
         # ----------------------------------------------------
         # 3. Normalize BM25
@@ -334,15 +351,14 @@ class HybridSearch:
                 for _ in bm25_scores
             ]
 
+
         # ----------------------------------------------------
         # 4. Calculate hybrid scores
         # ----------------------------------------------------
 
         combined_results = []
 
-        for i, clause in enumerate(
-            self.clauses
-        ):
+        for i, clause in enumerate(self.clauses):
 
             keyword_score = keyword_overlap(
                 question,
@@ -354,20 +370,14 @@ class HybridSearch:
                 clause["clause"]
             )
 
-            # ------------------------------------------------
-            # Hybrid score
-            # ------------------------------------------------
 
             hybrid_score = (
-
                 0.25 * normalized_bm25[i]
-
                 + 0.60 * semantic_scores[i]
-
                 + 0.15 * keyword_score
-
                 + section_boost
             )
+
 
             result = clause.copy()
 
@@ -391,9 +401,8 @@ class HybridSearch:
                 hybrid_score
             )
 
-            combined_results.append(
-                result
-            )
+            combined_results.append(result)
+
 
         # ----------------------------------------------------
         # 5. Rank
@@ -404,76 +413,40 @@ class HybridSearch:
             reverse=True
         )
 
+
         # ----------------------------------------------------
         # 6. REFUSAL GATE
         # ----------------------------------------------------
 
         if not combined_results:
+
             return {
                 "answerable": False,
                 "reason": "No clauses found.",
                 "results": []
             }
 
+
         best = combined_results[0]
+
 
         semantic_ok = (
             best["semantic_score"]
             >= SEMANTIC_THRESHOLD
         )
 
+
         hybrid_ok = (
             best["hybrid_score"]
             >= HYBRID_THRESHOLD
         )
 
-        # Strong lexical evidence can compensate
-        # for lower semantic similarity.
-        strong_lexical_support = (
-            best["bm25_score"] >= 5.0
-            and best["keyword_score"] >= 0.75
-            and best["hybrid_score"] >= 0.60
-        )
-
-        # Final answerability decision
-        answerable = (
-            hybrid_ok
-            and
-            (
-                semantic_ok
-                or
-                strong_lexical_support
-            )
-        )
-
-        print(
-            "DEBUG GATE:",
-            "semantic_ok=", semantic_ok,
-            "hybrid_ok=", hybrid_ok,
-            "strong_lexical_support=", strong_lexical_support,
-            "answerable=", answerable
-        )
-
-        if not answerable:
-            return {
-                "answerable": False,
-                "reason": (
-                    "The question does not have "
-                    "sufficiently strong support in "
-                    "the policy manual."
-                ),
-                "results": combined_results[:top_k]
-            }
 
         # ----------------------------------------------------
         # Strong lexical evidence
-        #
-        # This prevents correct policy clauses from being
-        # rejected merely because semantic similarity is low.
         # ----------------------------------------------------
 
         strong_lexical_support = (
-
             best["bm25_score"]
             >= STRONG_BM25_THRESHOLD
 
@@ -488,16 +461,14 @@ class HybridSearch:
             >= STRONG_HYBRID_THRESHOLD
         )
 
+
         # ----------------------------------------------------
         # Final answerability decision
         # ----------------------------------------------------
 
         answerable = (
-
             hybrid_ok
-
             and
-
             (
                 semantic_ok
                 or
@@ -505,10 +476,25 @@ class HybridSearch:
             )
         )
 
+
+        # ----------------------------------------------------
+        # DO NOT PRINT DEBUG INFORMATION
+        # ----------------------------------------------------
+        #
+        # Previously we had:
+        #
+        # print("DEBUG GATE:", ...)
+        #
+        # This has intentionally been removed.
+        #
+        # Retrieval scores remain available internally for
+        # debugging, but the user will not see them.
+        # ----------------------------------------------------
+
+
         if not answerable:
 
             return {
-
                 "answerable": False,
 
                 "reason": (
@@ -520,6 +506,7 @@ class HybridSearch:
                 "results": combined_results[:top_k]
             }
 
+
         # ----------------------------------------------------
         # 7. Expand referenced clauses
         # ----------------------------------------------------
@@ -528,9 +515,11 @@ class HybridSearch:
 
         added_clauses = set()
 
+
         for result in combined_results[:top_k]:
 
             clause_id = result["clause"]
+
 
             # ------------------------------------------------
             # Add original result
@@ -538,21 +527,21 @@ class HybridSearch:
 
             if clause_id not in added_clauses:
 
-                expanded_results.append(
-                    result
-                )
+                expanded_results.append(result)
 
                 added_clauses.add(
                     clause_id
                 )
 
+
             # ------------------------------------------------
-            # Find references
+            # Find referenced clauses
             # ------------------------------------------------
 
             references = extract_clause_references(
                 result["text"]
             )
+
 
             for ref in references:
 
@@ -562,9 +551,14 @@ class HybridSearch:
                 if ref in added_clauses:
                     continue
 
+
                 referenced_clause = (
                     self.clause_lookup[ref].copy()
                 )
+
+
+                # Referenced clauses are included as
+                # supporting evidence.
 
                 referenced_clause[
                     "bm25_score"
@@ -593,20 +587,19 @@ class HybridSearch:
                     "expanded_from"
                 ] = result["clause"]
 
+
                 expanded_results.append(
                     referenced_clause
                 )
 
-                added_clauses.add(
-                    ref
-                )
+                added_clauses.add(ref)
+
 
         # ----------------------------------------------------
         # 8. Return
         # ----------------------------------------------------
 
         return {
-
             "answerable": True,
 
             "reason": (
@@ -625,17 +618,19 @@ def main():
 
     searcher = HybridSearch()
 
+
+    print("\n" + "=" * 60)
+    print("GROUNDED POLICY ASSISTANT")
+    print("=" * 60)
+
     print(
-        "\n" + "=" * 60
+        "\nAsk a question about the policy manual."
     )
 
     print(
-        "HYBRID POLICY SEARCH"
+        "Type 'exit' or 'quit' to stop."
     )
 
-    print(
-        "=" * 60
-    )
 
     while True:
 
@@ -643,145 +638,66 @@ def main():
             "\nEnter your question: "
         ).strip()
 
+
         if not question:
             continue
+
 
         if question.lower() in {
             "exit",
             "quit"
         }:
+            print("\nGoodbye.")
             break
+
+
+        # ----------------------------------------------------
+        # Retrieve policy evidence
+        # ----------------------------------------------------
 
         response = searcher.search(
             question,
             top_k=5
         )
 
-        # ====================================================
-        # REFUSAL
-        # ====================================================
 
-        if not response["answerable"]:
+        # ----------------------------------------------------
+        # Generate grounded answer
+        # ----------------------------------------------------
 
-            print(
-                "\n" + "-" * 60
-            )
-
-            print(
-                "REFUSAL: The policy manual does not "
-                "provide sufficiently strong support "
-                "for this question."
-            )
-
-            print(
-                "\nReason:",
-                response["reason"]
-            )
-
-            print(
-                "\nBest candidate for debugging:"
-            )
-
-            if response["results"]:
-
-                result = response["results"][0]
-
-                print(
-                    "-" * 60
-                )
-
-                print(
-                    f"Clause: "
-                    f"{result['clause']}"
-                )
-
-                print(
-                    f"BM25: "
-                    f"{result['bm25_score']:.3f}"
-                )
-
-                print(
-                    f"Semantic: "
-                    f"{result['semantic_score']:.3f}"
-                )
-
-                print(
-                    f"Keyword: "
-                    f"{result['keyword_score']:.3f}"
-                )
-
-                print(
-                    f"Section Boost: "
-                    f"{result['section_boost']:.3f}"
-                )
-
-                print(
-                    f"Hybrid: "
-                    f"{result['hybrid_score']:.3f}"
-                )
-
-                print(
-                    f"Text: "
-                    f"{result['text']}"
-                )
-
-            continue
-
-        # ====================================================
-        # NORMAL RESULT
-        # ====================================================
-
-        print(
-            "\nTop matching clauses:\n"
+        answer = generate_answer(
+            question,
+            response
         )
 
-        for result in response["results"]:
 
-            print(
-                "-" * 60
-            )
+        # ====================================================
+        # USER-FACING ANSWER ONLY
+        # ====================================================
 
-            print(
-                f"Clause: "
-                f"{result['clause']}"
-            )
+        print("\n" + "=" * 60)
+        print("GROUNDED ANSWER")
+        print("=" * 60)
 
-            print(
-                f"BM25: "
-                f"{result['bm25_score']:.3f}"
-            )
+        print(answer)
 
-            print(
-                f"Semantic: "
-                f"{result['semantic_score']:.3f}"
-            )
+        print("=" * 60)
 
-            print(
-                f"Keyword: "
-                f"{result['keyword_score']:.3f}"
-            )
 
-            print(
-                f"Section Boost: "
-                f"{result['section_boost']:.3f}"
-            )
-
-            print(
-                f"Hybrid: "
-                f"{result['hybrid_score']:.3f}"
-            )
-
-            if "expanded_from" in result:
-
-                print(
-                    f"Expanded from: "
-                    f"{result['expanded_from']}"
-                )
-
-            print(
-                f"Text: "
-                f"{result['text']}"
-            )
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Do NOT print:
+        #
+        # BM25
+        # Semantic
+        # Keyword
+        # Section Boost
+        # Hybrid
+        # Expanded from
+        #
+        # These are internal retrieval/debug values.
+        # ----------------------------------------------------
 
 
 # ============================================================
