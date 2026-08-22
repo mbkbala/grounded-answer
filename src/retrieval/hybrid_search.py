@@ -15,11 +15,16 @@ CLAUSES_FILE = Path("data/clauses.json")
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 
-# Minimum semantic similarity required
-SEMANTIC_THRESHOLD = 0.40
+# Semantic threshold
+SEMANTIC_THRESHOLD = 0.30
 
-# Minimum final hybrid score required
+# Final hybrid threshold
 HYBRID_THRESHOLD = 0.45
+
+# Strong lexical evidence can compensate for lower semantic score
+STRONG_BM25_THRESHOLD = 5.0
+STRONG_KEYWORD_THRESHOLD = 0.75
+STRONG_HYBRID_THRESHOLD = 0.60
 
 
 # ============================================================
@@ -58,8 +63,14 @@ def keyword_overlap(question, text):
         "assistance",
         "application",
         "excluded",
+        "exclusion",
         "age",
         "household",
+        "sanction",
+        "detained",
+        "correctional",
+        "equivalent",
+        "misrepresentation",
     }
 
     question_important = question_tokens & important_words
@@ -79,12 +90,15 @@ def keyword_overlap(question, text):
 
 def extract_clause_references(text):
 
-    # Matches references such as:
+    # Matches:
     # §2.1.2
     # §2.4
     # §10.5
 
-    return re.findall(r"§\d+(?:\.\d+){1,2}", text)
+    return re.findall(
+        r"§\d+(?:\.\d+){1,2}",
+        text
+    )
 
 
 # ============================================================
@@ -99,7 +113,10 @@ class HybridSearch:
         # Load policy clauses
         # ----------------------------------------------------
 
-        with CLAUSES_FILE.open("r", encoding="utf-8") as file:
+        with CLAUSES_FILE.open(
+            "r",
+            encoding="utf-8"
+        ) as file:
 
             self.clauses = json.load(file)
 
@@ -117,7 +134,9 @@ class HybridSearch:
             for clause in self.clauses
         ]
 
-        self.bm25 = BM25Okapi(self.tokenized_clauses)
+        self.bm25 = BM25Okapi(
+            self.tokenized_clauses
+        )
 
         # ----------------------------------------------------
         # Semantic model
@@ -125,7 +144,9 @@ class HybridSearch:
 
         print("Loading semantic model...")
 
-        self.model = SentenceTransformer(MODEL_NAME)
+        self.model = SentenceTransformer(
+            MODEL_NAME
+        )
 
         texts = [
             clause["text"]
@@ -142,7 +163,9 @@ class HybridSearch:
 
         dimension = embeddings.shape[1]
 
-        self.index = faiss.IndexFlatIP(dimension)
+        self.index = faiss.IndexFlatIP(
+            dimension
+        )
 
         self.index.add(embeddings)
 
@@ -150,14 +173,21 @@ class HybridSearch:
             f"Loaded {len(self.clauses)} policy clauses."
         )
 
-
     # ========================================================
     # SECTION BOOST
     # ========================================================
 
-    def get_section_boost(self, question, clause_id):
+    def get_section_boost(
+        self,
+        question,
+        clause_id
+    ):
 
         question_lower = question.lower()
+
+        # ----------------------------------------------------
+        # Eligibility intent
+        # ----------------------------------------------------
 
         eligibility_words = {
             "eligibility",
@@ -167,54 +197,95 @@ class HybridSearch:
             "qualify",
             "qualification",
             "conditions",
+            "excluded",
+            "exclusion",
         }
 
-        # No eligibility intent
         if not any(
             word in question_lower
             for word in eligibility_words
         ):
+
             return 0.0
 
-        # ---------------------------------------------
-        # Part 2 = primary eligibility rules
-        # ---------------------------------------------
+        # ----------------------------------------------------
+        # Exclusion questions
+        # ----------------------------------------------------
+
+        exclusion_words = {
+            "excluded",
+            "exclusion",
+            "disqualified",
+            "disqualify",
+            "not eligible",
+        }
+
+        is_exclusion_question = any(
+            word in question_lower
+            for word in exclusion_words
+        )
+
+        if is_exclusion_question:
+
+            # Part 4 is the main exclusion section
+            if clause_id.startswith("§4."):
+
+                if clause_id == "§4.1.1":
+                    return 0.35
+
+                return 0.15
+
+            # Part 2 references exclusions
+            if clause_id.startswith("§2."):
+
+                return 0.05
+
+            return 0.0
+
+        # ----------------------------------------------------
+        # General eligibility question
+        # ----------------------------------------------------
 
         if clause_id.startswith("§2."):
 
-            # Direct conditions clause
+            # Direct conditions
             if clause_id == "§2.1.2":
                 return 0.30
 
-            # General eligibility rule
+            # Main eligibility rule
             if clause_id == "§2.1.1":
                 return 0.25
 
             # Other Part 2 clauses
             return 0.10
 
-        # ---------------------------------------------
-        # Part 3 = residence requirements
-        # ---------------------------------------------
+        # ----------------------------------------------------
+        # Residence requirements
+        # ----------------------------------------------------
 
         if clause_id.startswith("§3."):
+
             return 0.08
 
-        # ---------------------------------------------
-        # Part 4 = exclusions
-        # ---------------------------------------------
+        # ----------------------------------------------------
+        # Exclusions
+        # ----------------------------------------------------
 
         if clause_id.startswith("§4."):
+
             return 0.08
 
         return 0.0
-
 
     # ========================================================
     # SEARCH
     # ========================================================
 
-    def search(self, question, top_k=5):
+    def search(
+        self,
+        question,
+        top_k=5
+    ):
 
         # ----------------------------------------------------
         # 1. BM25
@@ -222,7 +293,9 @@ class HybridSearch:
 
         query_tokens = tokenize(question)
 
-        bm25_scores = self.bm25.get_scores(query_tokens)
+        bm25_scores = self.bm25.get_scores(
+            query_tokens
+        )
 
         # ----------------------------------------------------
         # 2. Semantic similarity
@@ -267,7 +340,9 @@ class HybridSearch:
 
         combined_results = []
 
-        for i, clause in enumerate(self.clauses):
+        for i, clause in enumerate(
+            self.clauses
+        ):
 
             keyword_score = keyword_overlap(
                 question,
@@ -284,9 +359,13 @@ class HybridSearch:
             # ------------------------------------------------
 
             hybrid_score = (
+
                 0.25 * normalized_bm25[i]
+
                 + 0.60 * semantic_scores[i]
+
                 + 0.15 * keyword_score
+
                 + section_boost
             )
 
@@ -312,10 +391,12 @@ class HybridSearch:
                 hybrid_score
             )
 
-            combined_results.append(result)
+            combined_results.append(
+                result
+            )
 
         # ----------------------------------------------------
-        # 5. Rank results
+        # 5. Rank
         # ----------------------------------------------------
 
         combined_results.sort(
@@ -328,7 +409,6 @@ class HybridSearch:
         # ----------------------------------------------------
 
         if not combined_results:
-
             return {
                 "answerable": False,
                 "reason": "No clauses found.",
@@ -347,10 +427,88 @@ class HybridSearch:
             >= HYBRID_THRESHOLD
         )
 
-        # Both conditions must pass
-        if not semantic_ok or not hybrid_ok:
+        # Strong lexical evidence can compensate
+        # for lower semantic similarity.
+        strong_lexical_support = (
+            best["bm25_score"] >= 5.0
+            and best["keyword_score"] >= 0.75
+            and best["hybrid_score"] >= 0.60
+        )
+
+        # Final answerability decision
+        answerable = (
+            hybrid_ok
+            and
+            (
+                semantic_ok
+                or
+                strong_lexical_support
+            )
+        )
+
+        print(
+            "DEBUG GATE:",
+            "semantic_ok=", semantic_ok,
+            "hybrid_ok=", hybrid_ok,
+            "strong_lexical_support=", strong_lexical_support,
+            "answerable=", answerable
+        )
+
+        if not answerable:
+            return {
+                "answerable": False,
+                "reason": (
+                    "The question does not have "
+                    "sufficiently strong support in "
+                    "the policy manual."
+                ),
+                "results": combined_results[:top_k]
+            }
+
+        # ----------------------------------------------------
+        # Strong lexical evidence
+        #
+        # This prevents correct policy clauses from being
+        # rejected merely because semantic similarity is low.
+        # ----------------------------------------------------
+
+        strong_lexical_support = (
+
+            best["bm25_score"]
+            >= STRONG_BM25_THRESHOLD
+
+            and
+
+            best["keyword_score"]
+            >= STRONG_KEYWORD_THRESHOLD
+
+            and
+
+            best["hybrid_score"]
+            >= STRONG_HYBRID_THRESHOLD
+        )
+
+        # ----------------------------------------------------
+        # Final answerability decision
+        # ----------------------------------------------------
+
+        answerable = (
+
+            hybrid_ok
+
+            and
+
+            (
+                semantic_ok
+                or
+                strong_lexical_support
+            )
+        )
+
+        if not answerable:
 
             return {
+
                 "answerable": False,
 
                 "reason": (
@@ -368,22 +526,28 @@ class HybridSearch:
 
         expanded_results = []
 
-        # Track clauses already included
         added_clauses = set()
 
-        # Start with top-ranked results
         for result in combined_results[:top_k]:
 
             clause_id = result["clause"]
 
+            # ------------------------------------------------
+            # Add original result
+            # ------------------------------------------------
+
             if clause_id not in added_clauses:
 
-                expanded_results.append(result)
+                expanded_results.append(
+                    result
+                )
 
-                added_clauses.add(clause_id)
+                added_clauses.add(
+                    clause_id
+                )
 
             # ------------------------------------------------
-            # Add referenced clauses
+            # Find references
             # ------------------------------------------------
 
             references = extract_clause_references(
@@ -421,7 +585,8 @@ class HybridSearch:
                 referenced_clause[
                     "hybrid_score"
                 ] = (
-                    result["hybrid_score"] * 0.95
+                    result["hybrid_score"]
+                    * 0.95
                 )
 
                 referenced_clause[
@@ -432,13 +597,16 @@ class HybridSearch:
                     referenced_clause
                 )
 
-                added_clauses.add(ref)
+                added_clauses.add(
+                    ref
+                )
 
         # ----------------------------------------------------
-        # 8. Return final results
+        # 8. Return
         # ----------------------------------------------------
 
         return {
+
             "answerable": True,
 
             "reason": (
@@ -457,9 +625,17 @@ def main():
 
     searcher = HybridSearch()
 
-    print("\n" + "=" * 60)
-    print("HYBRID POLICY SEARCH")
-    print("=" * 60)
+    print(
+        "\n" + "=" * 60
+    )
+
+    print(
+        "HYBRID POLICY SEARCH"
+    )
+
+    print(
+        "=" * 60
+    )
 
     while True:
 
@@ -487,7 +663,9 @@ def main():
 
         if not response["answerable"]:
 
-            print("\n" + "-" * 60)
+            print(
+                "\n" + "-" * 60
+            )
 
             print(
                 "REFUSAL: The policy manual does not "
@@ -509,7 +687,12 @@ def main():
                 result = response["results"][0]
 
                 print(
-                    f"Clause: {result['clause']}"
+                    "-" * 60
+                )
+
+                print(
+                    f"Clause: "
+                    f"{result['clause']}"
                 )
 
                 print(
@@ -538,7 +721,8 @@ def main():
                 )
 
                 print(
-                    f"Text: {result['text']}"
+                    f"Text: "
+                    f"{result['text']}"
                 )
 
             continue
@@ -553,10 +737,13 @@ def main():
 
         for result in response["results"]:
 
-            print("-" * 60)
+            print(
+                "-" * 60
+            )
 
             print(
-                f"Clause: {result['clause']}"
+                f"Clause: "
+                f"{result['clause']}"
             )
 
             print(
@@ -592,7 +779,8 @@ def main():
                 )
 
             print(
-                f"Text: {result['text']}"
+                f"Text: "
+                f"{result['text']}"
             )
 
 
