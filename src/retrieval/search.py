@@ -18,6 +18,7 @@ def tokenize(text):
         r"\b[a-zA-Z0-9]+\b",
         text.lower()
     )
+    
 
 
 class PolicySearch:
@@ -89,7 +90,7 @@ def main():
 
     results = searcher.search(
         question,
-        top_k=5
+        top_k=8
     )
 
     print("\nTop matching clauses:\n")
