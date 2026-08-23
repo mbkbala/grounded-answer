@@ -5,6 +5,7 @@
 # ============================================================
 
 import sys
+from datetime import date
 from pathlib import Path
 
 import streamlit as st
@@ -14,7 +15,7 @@ import streamlit as st
 # PROJECT ROOT
 # ============================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -775,6 +776,26 @@ with st.container(key="hero_card", border=True):
             use_container_width=True,
         )
 
+    date_col, event_col = st.columns(2, gap="small")
+
+    with date_col:
+        determination_date = st.date_input(
+            "Determination date",
+            value=None,
+            min_value=date(2020, 1, 1),
+            key="determination_date",
+            help="Used for earnings, thresholds, and sanctions.",
+        )
+
+    with event_col:
+        event_date = st.date_input(
+            "Change/event date",
+            value=None,
+            min_value=date(2020, 1, 1),
+            key="event_date",
+            help="Used for reporting deadlines and changes of circumstance.",
+        )
+
     # --------------------------------------------------------
     # FAQ CHIPS
     # --------------------------------------------------------
@@ -914,7 +935,17 @@ if search_clicked:
 
                 retrieval_response = (
                     search_engine.search(
-                        question
+                        question,
+                        determination_date=(
+                            determination_date.isoformat()
+                            if determination_date
+                            else None
+                        ),
+                        event_date=(
+                            event_date.isoformat()
+                            if event_date
+                            else None
+                        ),
                     )
                 )
 
@@ -1009,6 +1040,23 @@ if response:
         "",
     )
 
+    temporal = {}
+    if sources and isinstance(sources[0], dict):
+        temporal = sources[0].get("temporal") or {}
+
+    if temporal:
+        status = temporal.get("status", "")
+        labels = {
+            "original_rule": "Original rule",
+            "amended_rule": "Amended rule",
+            "transitional": "Transitional treatment",
+            "date_required": "Date required",
+        }
+        st.caption(
+            f"Policy version: {labels.get(status, status)}"
+            f" | {temporal.get('reason', '')}"
+        )
+
 
     # ========================================================
     # ANSWER HEADER
@@ -1055,7 +1103,7 @@ if response:
     ):
 
         st.markdown(
-            answer
+            answer.replace("$", r"\$")
         )
 
 
@@ -1131,8 +1179,8 @@ if response:
 
                     if source_text:
 
-                        st.write(
-                            source_text
+                        st.markdown(
+                            source_text.replace("$", r"\$")
                         )
 
                     else:

@@ -3,10 +3,23 @@
 # END-TO-END ASSISTANT PIPELINE
 # ============================================================
 
-from typing import Dict
+import re
+from typing import Dict, Optional
 
 from src.retrieval.hybrid_search import HybridSearch
 from src.generation.grounded_answer import GroundedAnswerGenerator
+
+
+def needs_temporal_dates(question: str) -> bool:
+    """Return whether a question needs date-based policy resolution."""
+
+    return bool(
+        re.search(
+            r"\b(?:date|dated|before|after|effective|earnings?|"
+            r"report(?:ing)?|deadline|sanction|claim|period|change)\b",
+            question.lower(),
+        )
+    )
 
 
 # ============================================================
@@ -60,7 +73,9 @@ class GroundedPolicyAssistant:
 
     def ask(
         self,
-        question: str
+        question: str,
+        determination_date: Optional[str] = None,
+        event_date: Optional[str] = None,
     ) -> Dict:
         """
         Process a user question through the complete pipeline.
@@ -89,7 +104,9 @@ class GroundedPolicyAssistant:
         # ----------------------------------------------------
 
         retrieval_response = self.searcher.search(
-            question
+            question,
+            determination_date=determination_date,
+            event_date=event_date,
         )
 
         # ----------------------------------------------------
@@ -131,6 +148,11 @@ class GroundedPolicyAssistant:
             "reason": answer_response.get(
                 "reason",
                 ""
+            ),
+
+            "temporal": retrieval_response.get(
+                "temporal",
+                {},
             ),
 
             # Keep retrieval information for debugging
@@ -265,6 +287,20 @@ def interactive_mode():
 
             continue
 
+        determination_date = None
+        event_date = None
+
+        if needs_temporal_dates(question):
+            print("Dates use YYYY-MM-DD.")
+
+            determination_date = input(
+                "Determination date (optional): "
+            ).strip() or None
+
+            event_date = input(
+                "Change/event date (optional): "
+            ).strip() or None
+
         # ----------------------------------------------------
         # Run complete pipeline
         # ----------------------------------------------------
@@ -272,7 +308,9 @@ def interactive_mode():
         try:
 
             response = assistant.ask(
-                question
+                question,
+                determination_date=determination_date,
+                event_date=event_date,
             )
 
             display_response(

@@ -151,13 +151,13 @@ visible rather than hiding retrieval behaviour.
 
 ---
 
-## 11. Current Limitation
+## 11. Temporal Evidence Application
 
-The current temporal layer identifies amendments that are effective
-for a particular date.
-
-The next implementation step is to apply amendment changes to the
-base policy clauses before retrieval.
+The active retrieval path resolves each retrieved clause against the
+determination date and event date supplied by the user. Supported
+amendment substitutions are applied to the retrieved evidence before
+grounded answer generation, and the resolution status is shown with
+the citation.
 
 This will allow historical and current policy questions to use the
 correct version of an affected clause.

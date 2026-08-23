@@ -352,7 +352,7 @@ Activate the virtual environment first.
 Then start the Streamlit application:
 
 ```powershell
-streamlit run <YOUR_STREAMLIT_FILE>.py
+streamlit run app.py
 ```
 
 For example, if the main application is `app.py`:
@@ -693,7 +693,7 @@ python -m venv .venv
 
 pip install -r requirements.txt
 
-streamlit run <YOUR_STREAMLIT_FILE>.py
+streamlit run app.py
 ```
 
 Then open the displayed Streamlit URL in a browser.
