@@ -1,11 +1,13 @@
 # ============================================================
 # GROUNDED POLICY ASSISTANT
 # HYBRID RETRIEVAL ENGINE
+# TEMPORAL POLICY-AWARE RETRIEVAL
 # ============================================================
 
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Dict, List, Set, Optional
 
@@ -25,8 +27,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # ============================================================
-# OPTIONAL TEMPORAL POLICY SUPPORT
+# TEMPORAL POLICY SUPPORT
 # ============================================================
+
+try:
+    from src.reasoning.policy_version import PolicyVersion
+except ImportError:
+    PolicyVersion = None
+
 
 try:
     from src.reasoning.temporal_policy import TemporalPolicy
@@ -69,30 +77,39 @@ def tokenize(text: str) -> List[str]:
 
     return re.findall(
         r"\b[a-zA-Z0-9]+\b",
-        text.lower()
+        str(text).lower()
     )
 
 
 # ============================================================
-# CLAUSE REFERENCE EXTRACTION
+# DATE VALIDATION
 # ============================================================
 
-def extract_clause_references(text: str) -> List[str]:
+def validate_date(value: Optional[str]) -> Optional[str]:
     """
-    Extract policy references such as:
+    Validate and normalize an ISO date.
 
-        §2.1.2
-        §2.4
-        §10.5
+    Expected:
+        YYYY-MM-DD
     """
 
-    if not text:
-        return []
+    if value is None:
+        return None
 
-    return re.findall(
-        r"§\d+(?:\.\d+){1,2}",
-        text
-    )
+    value = str(value).strip()
+
+    if not value:
+        return None
+
+    try:
+        parsed = date.fromisoformat(value)
+        return parsed.isoformat()
+
+    except ValueError:
+        raise ValueError(
+            f"Invalid date '{value}'. "
+            f"Expected format YYYY-MM-DD."
+        )
 
 
 # ============================================================
@@ -115,6 +132,25 @@ def normalize_clause_id(clause_id: str) -> str:
 
     clause_id = str(clause_id).strip()
 
+    # Fix common UTF-8 mojibake.
+    clause_id = clause_id.replace("Ã‚Â§", "§")
+    clause_id = clause_id.replace("Â§", "§")
+
+    # Remove spaces after section symbol.
+    clause_id = re.sub(
+        r"^§\s+",
+        "§",
+        clause_id
+    )
+
+    # Remove section / clause prefixes.
+    clause_id = re.sub(
+        r"^(section|clause)\s+",
+        "",
+        clause_id,
+        flags=re.IGNORECASE
+    )
+
     if not clause_id.startswith("§"):
         clause_id = "§" + clause_id
 
@@ -122,20 +158,85 @@ def normalize_clause_id(clause_id: str) -> str:
 
 
 # ============================================================
-# GET PARENT SECTION
+# CLAUSE REFERENCE EXTRACTION
 # ============================================================
 
-def get_parent_section(clause_id: str) -> Optional[str]:
+def extract_clause_references(text: str) -> List[str]:
     """
-    Convert a child clause into its parent section.
+    Extract explicit policy clause references.
 
-    Examples:
-        §2.4.1 -> §2.4
-        §2.4.2 -> §2.4
-        §2.4.3 -> §2.4
+    Supported:
+        §2.1.2
+        §2.4
+        2.1.2
+        section 2.1.2
+        clause 2.4
     """
 
-    normalized = normalize_clause_id(clause_id)
+    if not text:
+        return []
+
+    references = []
+
+    # Explicit § reference.
+    references.extend(
+        re.findall(
+            r"§\s*\d+(?:\.\d+){1,2}",
+            text
+        )
+    )
+
+    # Section reference.
+    references.extend(
+        re.findall(
+            r"\bsection\s+(\d+(?:\.\d+){1,2})\b",
+            text,
+            flags=re.IGNORECASE
+        )
+    )
+
+    # Clause reference.
+    references.extend(
+        re.findall(
+            r"\bclause\s+(\d+(?:\.\d+){1,2})\b",
+            text,
+            flags=re.IGNORECASE
+        )
+    )
+
+    normalized = []
+
+    for reference in references:
+
+        reference = str(reference).strip()
+
+        reference = normalize_clause_id(
+            reference
+        )
+
+        if reference not in normalized:
+            normalized.append(reference)
+
+    return normalized
+
+
+# ============================================================
+# PARENT SECTION
+# ============================================================
+
+def get_parent_section(
+    clause_id: str
+) -> Optional[str]:
+    """
+    Convert child clause to parent section.
+
+    §2.4.1 -> §2.4
+    §2.4.2 -> §2.4
+    """
+
+    normalized = normalize_clause_id(
+        clause_id
+    )
 
     match = re.match(
         r"^(§\d+\.\d+)\.\d+$",
@@ -155,8 +256,6 @@ def get_parent_section(clause_id: str) -> Optional[str]:
 def get_question_type(question: str) -> str:
     """
     Determine the most specific policy intent.
-
-    Specific intents are checked before generic intents.
     """
 
     q = question.lower().strip()
@@ -165,10 +264,7 @@ def get_question_type(question: str) -> str:
     # DIRECT CLAUSE REFERENCE
     # ========================================================
 
-    if re.search(
-        r"§\d+(?:\.\d+){1,2}",
-        question
-    ):
+    if extract_clause_references(question):
         return "clause_reference"
 
     # ========================================================
@@ -190,11 +286,20 @@ def get_question_type(question: str) -> str:
         "football",
         "movie",
         "music",
+        "recipe",
+        "cricket",
+        "stock",
+        "bitcoin",
+        "celebrity",
     }
 
-    question_tokens = set(tokenize(q))
+    question_tokens = set(
+        tokenize(q)
+    )
 
-    if question_tokens.intersection(outside_policy_terms):
+    if question_tokens.intersection(
+        outside_policy_terms
+    ):
         return "outside_policy"
 
     # ========================================================
@@ -207,6 +312,7 @@ def get_question_type(question: str) -> str:
         or re.search(r"\bdetention\b", q)
         or re.search(r"\bjail\b", q)
         or re.search(r"\bprison\b", q)
+        or re.search(r"\bincarcerated\b", q)
     ):
         return "correctional_exclusion"
 
@@ -214,7 +320,10 @@ def get_question_type(question: str) -> str:
     # SANCTION
     # ========================================================
 
-    if re.search(r"\bsanction\b", q):
+    if re.search(
+        r"\bsanction(?:s|ed)?\b",
+        q
+    ):
         return "sanction_exclusion"
 
     # ========================================================
@@ -226,8 +335,8 @@ def get_question_type(question: str) -> str:
         "exclusion",
         "disqualified",
         "disqualify",
-        "not eligible",
         "ineligible",
+        "not eligible",
     }
 
     if any(
@@ -240,26 +349,12 @@ def get_question_type(question: str) -> str:
     # AGE 18
     # ========================================================
 
-    if re.search(
-        r"\b18\s+(?:years?\s+old|year-old)\b",
-        q
-    ):
-        return "age_18"
-
-    # Also handle:
-    # "age 18"
-    # "at 18"
-    # "18 years"
-
-    if re.search(
-        r"\bage\s+18\b",
-        q
-    ):
-        return "age_18"
-
-    if re.search(
-        r"\bat\s+18\b",
-        q
+    if (
+        re.search(r"\bage\s*18\b", q)
+        or re.search(r"\bat\s+18\b", q)
+        or re.search(r"\b18\s+years?\s+old\b", q)
+        or re.search(r"\b18-year-old\b", q)
+        or re.search(r"\b18-year old\b", q)
     ):
         return "age_18"
 
@@ -267,15 +362,11 @@ def get_question_type(question: str) -> str:
     # AGE 17
     # ========================================================
 
-    if re.search(
-        r"\b17\s+(?:years?\s+old|year-old)\b",
-        q
-    ):
-        return "age_minor"
-
-    if re.search(
-        r"\bage\s+17\b",
-        q
+    if (
+        re.search(r"\bage\s*17\b", q)
+        or re.search(r"\b17\s+years?\s+old\b", q)
+        or re.search(r"\b17-year-old\b", q)
+        or re.search(r"\b17-year old\b", q)
     ):
         return "age_minor"
 
@@ -283,15 +374,11 @@ def get_question_type(question: str) -> str:
     # AGE 16
     # ========================================================
 
-    if re.search(
-        r"\b16\s+(?:years?\s+old|year-old)\b",
-        q
-    ):
-        return "age_minor"
-
-    if re.search(
-        r"\bage\s+16\b",
-        q
+    if (
+        re.search(r"\bage\s*16\b", q)
+        or re.search(r"\b16\s+years?\s+old\b", q)
+        or re.search(r"\b16-year-old\b", q)
+        or re.search(r"\b16-year old\b", q)
     ):
         return "age_minor"
 
@@ -299,15 +386,11 @@ def get_question_type(question: str) -> str:
     # MINOR / UNDER 18
     # ========================================================
 
-    if re.search(
-        r"\bunder\s+18\b",
-        q
-    ):
-        return "age_minor"
-
-    if re.search(
-        r"\bminor\b",
-        q
+    if (
+        re.search(r"\bunder\s+18\b", q)
+        or re.search(r"\bminor\b", q)
+        or re.search(r"\bminor-age\b", q)
+        or re.search(r"\bunderage\b", q)
     ):
         return "age_minor"
 
@@ -315,15 +398,10 @@ def get_question_type(question: str) -> str:
     # GENERIC AGE
     # ========================================================
 
-    if re.search(
-        r"\bage\b",
-        q
-    ):
-        return "age"
-
-    if re.search(
-        r"\baged\b",
-        q
+    if (
+        re.search(r"\bage\b", q)
+        or re.search(r"\baged\b", q)
+        or re.search(r"\bhow old\b", q)
     ):
         return "age"
 
@@ -353,7 +431,7 @@ def get_question_type(question: str) -> str:
             or "assistance" in q
             or "program" in q
             or "requirement" in q
-            or "need to" in q
+            or "resident" in q
         )
     ):
         return "residence"
@@ -372,9 +450,9 @@ def get_question_type(question: str) -> str:
     # RESOURCES
     # ========================================================
 
-    if (
-        re.search(r"\bresource\b", q)
-        or re.search(r"\bresources\b", q)
+    if re.search(
+        r"\bresources?\b",
+        q
     ):
         return "resources"
 
@@ -386,6 +464,7 @@ def get_question_type(question: str) -> str:
         re.search(r"\bapplication\b", q)
         or re.search(r"\bapply\b", q)
         or "submit an application" in q
+        or "how do i apply" in q
     ):
         return "application"
 
@@ -393,7 +472,7 @@ def get_question_type(question: str) -> str:
     # ADMINISTRATION
     # ========================================================
 
-    administration_phrases = {
+    administration_terms = {
         "administer",
         "administers",
         "administered",
@@ -414,9 +493,8 @@ def get_question_type(question: str) -> str:
     }
 
     if any(
-        phrase in question_tokens
-        for phrase in administration_phrases
-        if " " not in phrase and "-" not in phrase
+        term in question_tokens
+        for term in administration_terms
     ):
         return "administration"
 
@@ -466,29 +544,30 @@ def get_question_type(question: str) -> str:
         "manual",
     }
 
-    if question_tokens.intersection(policy_terms):
+    if question_tokens.intersection(
+        policy_terms
+    ):
         return "general"
-
-    # ========================================================
-    # DEFAULT
-    # ========================================================
 
     return "outside_policy"
 
 
 # ============================================================
-# POLICY SCOPE GATE
+# POLICY SCOPE
 # ============================================================
 
-def is_policy_question(question: str) -> bool:
+def is_policy_question(
+    question: str
+) -> bool:
     """
-    Determine whether the question belongs to the
+    Determine whether question belongs to
     Household Support Program policy domain.
     """
 
-    question_type = get_question_type(question)
-
-    return question_type != "outside_policy"
+    return (
+        get_question_type(question)
+        != "outside_policy"
+    )
 
 
 # ============================================================
@@ -500,12 +579,16 @@ def keyword_overlap(
     text: str
 ) -> float:
     """
-    Calculate overlap between important question terms
-    and important terms in the clause.
+    Calculate overlap of policy-relevant terms.
     """
 
-    question_tokens = set(tokenize(question))
-    text_tokens = set(tokenize(text))
+    question_tokens = set(
+        tokenize(question)
+    )
+
+    text_tokens = set(
+        tokenize(text)
+    )
 
     if not question_tokens:
         return 0.0
@@ -569,18 +652,21 @@ def keyword_overlap(
     }
 
     question_important = (
-        question_tokens & important_words
+        question_tokens
+        & important_words
     )
 
     text_important = (
-        text_tokens & important_words
+        text_tokens
+        & important_words
     )
 
     if not question_important:
         return 0.0
 
     overlap = (
-        question_important & text_important
+        question_important
+        & text_important
     )
 
     return (
@@ -590,7 +676,7 @@ def keyword_overlap(
 
 
 # ============================================================
-# HYBRID SEARCH
+# HYBRID SEARCH ENGINE
 # ============================================================
 
 class HybridSearch:
@@ -611,7 +697,16 @@ class HybridSearch:
             "r",
             encoding="utf-8"
         ) as file:
+
             self.clauses = json.load(file)
+
+        if not isinstance(
+            self.clauses,
+            list
+        ):
+            raise ValueError(
+                "clauses.json must contain a list of clauses."
+            )
 
         if not self.clauses:
             raise ValueError(
@@ -619,14 +714,45 @@ class HybridSearch:
             )
 
         # ====================================================
-        # NORMALIZE CLAUSE IDs
+        # NORMALIZE CLAUSES
         # ====================================================
 
+        normalized_clauses = []
+
         for clause in self.clauses:
-            if "clause" in clause:
-                clause["clause"] = normalize_clause_id(
-                    clause["clause"]
+
+            if not isinstance(
+                clause,
+                dict
+            ):
+                continue
+
+            if "clause" not in clause:
+                continue
+
+            clause_copy = clause.copy()
+
+            clause_copy["clause"] = (
+                normalize_clause_id(
+                    clause_copy["clause"]
                 )
+            )
+
+            clause_copy.setdefault(
+                "text",
+                ""
+            )
+
+            normalized_clauses.append(
+                clause_copy
+            )
+
+        self.clauses = normalized_clauses
+
+        if not self.clauses:
+            raise ValueError(
+                "No valid policy clauses were found."
+            )
 
         # ====================================================
         # CLAUSE LOOKUP
@@ -635,14 +761,16 @@ class HybridSearch:
         self.clause_lookup = {
             clause["clause"]: clause
             for clause in self.clauses
-            if "clause" in clause
         }
 
         # ====================================================
         # PARENT SECTION INDEX
         # ====================================================
 
-        self.section_children: Dict[str, List[dict]] = {}
+        self.section_children: Dict[
+            str,
+            List[dict]
+        ] = {}
 
         for clause in self.clauses:
 
@@ -653,17 +781,23 @@ class HybridSearch:
             )
 
             if parent:
+
                 self.section_children.setdefault(
                     parent,
                     []
                 ).append(clause)
 
         # ====================================================
-        # BM25
+        # BM25 INDEX
         # ====================================================
 
         self.tokenized_clauses = [
-            tokenize(clause["text"])
+            tokenize(
+                clause.get(
+                    "text",
+                    ""
+                )
+            )
             for clause in self.clauses
         ]
 
@@ -675,18 +809,25 @@ class HybridSearch:
         # SEMANTIC MODEL
         # ====================================================
 
-        print("Loading semantic model...")
+        print(
+            "Loading semantic model..."
+        )
 
         self.model = SentenceTransformer(
             MODEL_NAME
         )
 
         texts = [
-            clause["text"]
+            clause.get(
+                "text",
+                ""
+            )
             for clause in self.clauses
         ]
 
-        print("Creating semantic index...")
+        print(
+            "Creating semantic index..."
+        )
 
         embeddings = self.model.encode(
             texts,
@@ -700,126 +841,375 @@ class HybridSearch:
             dimension
         )
 
-        self.index.add(embeddings)
+        self.index.add(
+            embeddings
+        )
 
         print(
-            f"Loaded {len(self.clauses)} policy clauses."
+            f"Loaded {len(self.clauses)} "
+            f"policy clauses."
         )
 
         # ====================================================
-        # TEMPORAL POLICY ENGINE
+        # POLICY VERSION ENGINE
         # ====================================================
 
-        self.temporal_policy = None
+        self.policy_version = None
 
-        if TemporalPolicy is not None:
+        if PolicyVersion is not None:
 
             try:
-                self.temporal_policy = TemporalPolicy()
+
+                self.policy_version = (
+                    PolicyVersion()
+                )
 
                 print(
-                    "Temporal policy engine loaded."
+                    "Policy version engine loaded."
                 )
 
             except Exception as exc:
 
                 print(
-                    "Warning: Temporal policy engine "
+                    "Warning: Policy version engine "
                     f"could not be loaded: {exc}"
                 )
 
+        # ====================================================
+        # LEGACY TEMPORAL ENGINE
+        # ====================================================
+
+        self.temporal_policy = None
+
+        if self.policy_version is None:
+
+            if TemporalPolicy is not None:
+
+                try:
+
+                    self.temporal_policy = (
+                        TemporalPolicy()
+                    )
+
+                    print(
+                        "Legacy temporal policy engine "
+                        "loaded."
+                    )
+
+                except Exception as exc:
+
+                    print(
+                        "Warning: Temporal policy engine "
+                        f"could not be loaded: {exc}"
+                    )
+
     # ========================================================
-    # TEMPORAL POLICY
+    # POLICY VERSION
     # ========================================================
 
     def get_policy_version(
         self,
         as_of_date: Optional[str] = None
     ) -> Optional[dict]:
+        """
+        Return policy version applicable to a date.
+        """
 
-        if self.temporal_policy is None:
+        if not as_of_date:
             return None
 
-        if as_of_date is None:
-            return None
+        as_of_date = validate_date(
+            as_of_date
+        )
 
-        try:
+        if self.policy_version is not None:
 
-            if hasattr(
-                self.temporal_policy,
-                "get_policy_version"
-            ):
+            try:
 
-                version = (
-                    self.temporal_policy
-                    .get_policy_version(
-                        as_of_date
+                if hasattr(
+                    self.policy_version,
+                    "get_policy_version"
+                ):
+
+                    result = (
+                        self.policy_version
+                        .get_policy_version(
+                            as_of_date
+                        )
                     )
-                )
 
-                if isinstance(version, dict):
-                    return version
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+                        return result
 
-            active_amendments = []
+            except Exception:
+                pass
 
-            if hasattr(
-                self.temporal_policy,
-                "get_active_amendments"
-            ):
+        if self.temporal_policy is not None:
 
-                active_amendments = (
-                    self.temporal_policy
-                    .get_active_amendments(
-                        as_of_date
+            try:
+
+                if hasattr(
+                    self.temporal_policy,
+                    "get_policy_version"
+                ):
+
+                    result = (
+                        self.temporal_policy
+                        .get_policy_version(
+                            as_of_date
+                        )
                     )
-                )
 
-            if not isinstance(
-                active_amendments,
-                list
-            ):
-                active_amendments = []
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+                        return result
 
-            latest = None
+            except Exception:
+                pass
 
-            if hasattr(
-                self.temporal_policy,
-                "get_latest_amendment"
-            ):
+        return None
 
-                latest = (
-                    self.temporal_policy
-                    .get_latest_amendment(
-                        as_of_date
+    # ========================================================
+    # CLAUSE TEMPORAL STATUS
+    # ========================================================
+
+    def get_clause_temporal_status(
+        self,
+        clause_id: str,
+        determination_date: Optional[str] = None,
+        event_date: Optional[str] = None,
+        rule_type: Optional[str] = None
+    ) -> Optional[dict]:
+        """
+        Determine temporal applicability of a clause.
+        """
+
+        clause_id = normalize_clause_id(
+            clause_id
+        )
+
+        determination_date = validate_date(
+            determination_date
+        )
+
+        event_date = validate_date(
+            event_date
+        )
+
+        # ====================================================
+        # NEW ENGINE
+        # ====================================================
+
+        if self.policy_version is not None:
+
+            try:
+
+                if hasattr(
+                    self.policy_version,
+                    "determine_clause_version"
+                ):
+
+                    result = (
+                        self.policy_version
+                        .determine_clause_version(
+                            clause_id=clause_id,
+                            determination_date=(
+                                determination_date
+                            ),
+                            event_date=event_date,
+                            rule_type=rule_type
+                        )
                     )
-                )
 
-            explanation = None
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+                        return result
 
-            if hasattr(
-                self.temporal_policy,
-                "explain"
-            ):
+            except TypeError:
 
-                explanation = (
-                    self.temporal_policy
-                    .explain(
-                        as_of_date
+                try:
+
+                    result = (
+                        self.policy_version
+                        .determine_clause_version(
+                            clause_id,
+                            determination_date,
+                            event_date,
+                            rule_type
+                        )
                     )
-                )
 
-            return {
-                "as_of_date": as_of_date,
-                "amendments_active": len(
-                    active_amendments
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+                        return result
+
+                except Exception:
+                    pass
+
+            except Exception:
+                pass
+
+            # Alternative API.
+            try:
+
+                if hasattr(
+                    self.policy_version,
+                    "get_clause_version"
+                ):
+
+                    result = (
+                        self.policy_version
+                        .get_clause_version(
+                            clause_id=clause_id,
+                            determination_date=(
+                                determination_date
+                            ),
+                            event_date=event_date,
+                            rule_type=rule_type
+                        )
+                    )
+
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+                        return result
+
+            except Exception:
+                pass
+
+        # ====================================================
+        # LEGACY ENGINE
+        # ====================================================
+
+        if self.temporal_policy is not None:
+
+            try:
+
+                if hasattr(
+                    self.temporal_policy,
+                    "determine_clause_version"
+                ):
+
+                    result = (
+                        self.temporal_policy
+                        .determine_clause_version(
+                            clause_id=clause_id,
+                            determination_date=(
+                                determination_date
+                            ),
+                            event_date=event_date,
+                            rule_type=rule_type
+                        )
+                    )
+
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+                        return result
+
+            except Exception:
+                pass
+
+        return None
+
+    # ========================================================
+    # APPLY TEMPORAL METADATA
+    # ========================================================
+
+    def _apply_temporal_metadata(
+        self,
+        result: dict,
+        determination_date: Optional[str] = None,
+        event_date: Optional[str] = None,
+        rule_type: Optional[str] = None
+    ) -> dict:
+
+        if not result:
+            return result
+
+        result = result.copy()
+
+        clause_id = normalize_clause_id(
+            result.get(
+                "clause",
+                ""
+            )
+        )
+
+        temporal_status = (
+            self.get_clause_temporal_status(
+                clause_id=clause_id,
+                determination_date=(
+                    determination_date
                 ),
-                "active_amendments": active_amendments,
-                "latest_amendment": latest,
-                "explanation": explanation,
-            }
+                event_date=event_date,
+                rule_type=rule_type
+            )
+        )
 
-        except Exception:
-            return None
+        if temporal_status:
+
+            result["temporal_status"] = (
+                temporal_status
+            )
+
+            if "status" in temporal_status:
+
+                result["policy_rule_status"] = (
+                    temporal_status["status"]
+                )
+
+            if "amendment_applies" in temporal_status:
+
+                result["amendment_applies"] = (
+                    temporal_status[
+                        "amendment_applies"
+                    ]
+                )
+
+            if "applicable_date" in temporal_status:
+
+                result["applicable_date"] = (
+                    temporal_status[
+                        "applicable_date"
+                    ]
+                )
+
+            if "amendment_effective_date" in temporal_status:
+
+                result["amendment_effective_date"] = (
+                    temporal_status[
+                        "amendment_effective_date"
+                    ]
+                )
+
+            if "reason" in temporal_status:
+
+                result["temporal_reason"] = (
+                    temporal_status["reason"]
+                )
+
+            result["policy_version"] = (
+                "amended"
+                if temporal_status.get(
+                    "amendment_applies",
+                    False
+                )
+                else "original"
+            )
+
+        return result
 
     # ========================================================
     # SECTION BOOST
@@ -840,27 +1230,24 @@ class HybridSearch:
         )
 
         # ====================================================
-        # EXACT CLAUSE REFERENCE
+        # DIRECT CLAUSE
         # ====================================================
 
         if question_type == "clause_reference":
 
-            references = extract_clause_references(
-                question
+            references = (
+                extract_clause_references(
+                    question
+                )
             )
 
-            normalized_refs = [
-                normalize_clause_id(ref)
-                for ref in references
-            ]
-
-            if clause_id in normalized_refs:
+            if clause_id in references:
                 return 1.00
 
             return 0.0
 
         # ====================================================
-        # CORRECTIONAL EXCLUSION
+        # CORRECTIONAL
         # ====================================================
 
         if question_type == "correctional_exclusion":
@@ -874,7 +1261,7 @@ class HybridSearch:
             return 0.0
 
         # ====================================================
-        # SANCTION EXCLUSION
+        # SANCTION
         # ====================================================
 
         if question_type == "sanction_exclusion":
@@ -888,7 +1275,7 @@ class HybridSearch:
             return 0.0
 
         # ====================================================
-        # GENERAL EXCLUSION
+        # EXCLUSION
         # ====================================================
 
         if question_type == "exclusion":
@@ -1022,7 +1409,7 @@ class HybridSearch:
 
         # ====================================================
         # ADMINISTRATION
-        # ========================================================
+        # ====================================================
 
         if question_type == "administration":
 
@@ -1035,7 +1422,7 @@ class HybridSearch:
             return 0.0
 
         # ====================================================
-        # GENERAL ELIGIBILITY
+        # ELIGIBILITY
         # ====================================================
 
         if question_type == "eligibility":
@@ -1060,7 +1447,7 @@ class HybridSearch:
         return 0.0
 
     # ========================================================
-    # MAKE FORCED RESULT
+    # FORCED RESULT
     # ========================================================
 
     def _make_forced_result(
@@ -1090,12 +1477,15 @@ class HybridSearch:
         result["hybrid_score"] = score
 
         if expanded_from:
-            result["expanded_from"] = expanded_from
+
+            result["expanded_from"] = (
+                expanded_from
+            )
 
         return result
 
     # ========================================================
-    # BUILD SYNTHETIC SECTION RESULT
+    # SECTION RESULT
     # ========================================================
 
     def _make_section_result(
@@ -1141,23 +1531,16 @@ class HybridSearch:
 
         for child in children:
 
-            child_id = child["clause"]
-            child_text = child.get(
-                "text",
-                ""
-            )
-
             combined_text_parts.append(
-                f"{child_id}: {child_text}"
+                f'{child["clause"]}: '
+                f'{child.get("text", "")}'
             )
-
-        combined_text = "\n".join(
-            combined_text_parts
-        )
 
         return {
             "clause": section_id,
-            "text": combined_text,
+            "text": "\n".join(
+                combined_text_parts
+            ),
             "synthetic_section": True,
             "section_children": [
                 child["clause"]
@@ -1171,6 +1554,41 @@ class HybridSearch:
         }
 
     # ========================================================
+    # BUILD COMMON RESPONSE
+    # ========================================================
+
+    @staticmethod
+    def _add_temporal_request_metadata(
+        response: dict,
+        determination_date: Optional[str],
+        event_date: Optional[str],
+        rule_type: Optional[str],
+        policy_version: Optional[dict]
+    ) -> dict:
+
+        if determination_date:
+            response[
+                "determination_date"
+            ] = determination_date
+
+        if event_date:
+            response[
+                "event_date"
+            ] = event_date
+
+        if rule_type:
+            response[
+                "rule_type"
+            ] = rule_type
+
+        if policy_version:
+            response[
+                "policy_version"
+            ] = policy_version
+
+        return response
+
+    # ========================================================
     # SEARCH
     # ========================================================
 
@@ -1178,10 +1596,70 @@ class HybridSearch:
         self,
         question: str,
         top_k: int = 5,
-        as_of_date: Optional[str] = None
+        as_of_date: Optional[str] = None,
+        event_date: Optional[str] = None,
+        determination_date: Optional[str] = None,
+        rule_type: Optional[str] = None
     ) -> Dict:
 
-        question = question.strip()
+        question = str(
+            question or ""
+        ).strip()
+
+        # ====================================================
+        # TOP K
+        # ====================================================
+
+        try:
+            top_k = int(top_k)
+        except (
+            TypeError,
+            ValueError
+        ):
+            top_k = 5
+
+        top_k = max(
+            1,
+            top_k
+        )
+
+        # ====================================================
+        # DATES
+        # ====================================================
+
+        if determination_date is None:
+            determination_date = as_of_date
+
+        determination_date = validate_date(
+            determination_date
+        )
+
+        event_date = validate_date(
+            event_date
+        )
+
+        # ====================================================
+        # RULE TYPE
+        # ====================================================
+
+        if rule_type is not None:
+
+            rule_type = str(
+                rule_type
+            ).strip().lower()
+
+            allowed_rule_types = {
+                "event_date",
+                "determination_date"
+            }
+
+            if rule_type not in allowed_rule_types:
+
+                raise ValueError(
+                    "rule_type must be either "
+                    "'event_date' or "
+                    "'determination_date'."
+                )
 
         # ====================================================
         # EMPTY QUESTION
@@ -1199,7 +1677,9 @@ class HybridSearch:
         # POLICY SCOPE GATE
         # ====================================================
 
-        if not is_policy_question(question):
+        if not is_policy_question(
+            question
+        ):
 
             return {
                 "answerable": False,
@@ -1207,6 +1687,7 @@ class HybridSearch:
                     "The question is outside the scope "
                     "of the policy manual."
                 ),
+                "question_type": "outside_policy",
                 "results": []
             }
 
@@ -1215,11 +1696,16 @@ class HybridSearch:
         )
 
         # ====================================================
-        # TEMPORAL POLICY INFORMATION
+        # POLICY VERSION
         # ====================================================
 
-        policy_version = self.get_policy_version(
-            as_of_date
+        policy_version = (
+            self.get_policy_version(
+                as_of_date=(
+                    as_of_date
+                    or determination_date
+                )
+            )
         )
 
         # ====================================================
@@ -1228,32 +1714,48 @@ class HybridSearch:
 
         if question_type == "clause_reference":
 
-            references = extract_clause_references(
-                question
+            references = (
+                extract_clause_references(
+                    question
+                )
             )
 
             exact_results = []
 
             for ref in references:
 
-                normalized_ref = normalize_clause_id(
-                    ref
-                )
-
-                result = self._make_forced_result(
-                    normalized_ref,
-                    score=1.0
+                result = (
+                    self._make_forced_result(
+                        ref,
+                        score=1.0
+                    )
                 )
 
                 if result is None:
 
-                    result = self._make_section_result(
-                        normalized_ref,
-                        score=1.0
+                    result = (
+                        self._make_section_result(
+                            ref,
+                            score=1.0
+                        )
                     )
 
                 if result:
-                    exact_results.append(result)
+
+                    result = (
+                        self._apply_temporal_metadata(
+                            result,
+                            determination_date=(
+                                determination_date
+                            ),
+                            event_date=event_date,
+                            rule_type=rule_type
+                        )
+                    )
+
+                    exact_results.append(
+                        result
+                    )
 
             if exact_results:
 
@@ -1262,15 +1764,17 @@ class HybridSearch:
                     "reason": (
                         "Exact policy clause reference found."
                     ),
+                    "question_type": question_type,
                     "results": exact_results[:top_k]
                 }
 
-                if policy_version:
-                    response["policy_version"] = (
-                        policy_version
-                    )
-
-                return response
+                return self._add_temporal_request_metadata(
+                    response,
+                    determination_date,
+                    event_date,
+                    rule_type,
+                    policy_version
+                )
 
             return {
                 "answerable": False,
@@ -1278,6 +1782,7 @@ class HybridSearch:
                     "The referenced policy clause "
                     "could not be found."
                 ),
+                "question_type": question_type,
                 "results": []
             }
 
@@ -1289,12 +1794,23 @@ class HybridSearch:
             question
         )
 
-        bm25_scores = self.bm25.get_scores(
-            query_tokens
-        )
+        if query_tokens:
+
+            bm25_scores = (
+                self.bm25.get_scores(
+                    query_tokens
+                )
+            )
+
+        else:
+
+            bm25_scores = [
+                0.0
+                for _ in self.clauses
+            ]
 
         # ====================================================
-        # SEMANTIC SIMILARITY
+        # SEMANTIC
         # ====================================================
 
         query_embedding = self.model.encode(
@@ -1303,9 +1819,11 @@ class HybridSearch:
             normalize_embeddings=True
         )
 
-        semantic_scores, _ = self.index.search(
-            query_embedding,
-            len(self.clauses)
+        semantic_scores, _ = (
+            self.index.search(
+                query_embedding,
+                len(self.clauses)
+            )
         )
 
         semantic_scores = semantic_scores[0]
@@ -1314,14 +1832,19 @@ class HybridSearch:
         # NORMALIZE BM25
         # ====================================================
 
-        max_bm25 = max(
-            bm25_scores
+        max_bm25 = (
+            max(bm25_scores)
+            if len(bm25_scores)
+            else 0.0
         )
 
         if max_bm25 > 0:
 
             normalized_bm25 = [
-                score / max_bm25
+                max(
+                    0.0,
+                    float(score)
+                ) / max_bm25
                 for score in bm25_scores
             ]
 
@@ -1333,7 +1856,7 @@ class HybridSearch:
             ]
 
         # ====================================================
-        # HYBRID SCORING
+        # HYBRID SCORE
         # ====================================================
 
         combined_results = []
@@ -1344,18 +1867,33 @@ class HybridSearch:
 
             keyword_score = keyword_overlap(
                 question,
-                clause["text"]
+                clause.get(
+                    "text",
+                    ""
+                )
             )
 
-            section_boost = self.get_section_boost(
-                question,
-                clause["clause"]
+            section_boost = (
+                self.get_section_boost(
+                    question,
+                    clause["clause"]
+                )
+            )
+
+            semantic_score = max(
+                0.0,
+                float(
+                    semantic_scores[i]
+                )
             )
 
             hybrid_score = (
-                0.25 * normalized_bm25[i]
-                + 0.60 * semantic_scores[i]
-                + 0.15 * keyword_score
+                0.25
+                * normalized_bm25[i]
+                + 0.60
+                * semantic_score
+                + 0.15
+                * keyword_score
                 + section_boost
             )
 
@@ -1366,7 +1904,7 @@ class HybridSearch:
             )
 
             result["semantic_score"] = float(
-                semantic_scores[i]
+                semantic_score
             )
 
             result["keyword_score"] = float(
@@ -1390,7 +1928,9 @@ class HybridSearch:
         # ====================================================
 
         combined_results.sort(
-            key=lambda item: item["hybrid_score"],
+            key=lambda item: item[
+                "hybrid_score"
+            ],
             reverse=True
         )
 
@@ -1399,11 +1939,12 @@ class HybridSearch:
             return {
                 "answerable": False,
                 "reason": "No policy clauses found.",
+                "question_type": question_type,
                 "results": []
             }
 
         # ====================================================
-        # INTENT-AWARE RESULT CONSTRUCTION
+        # INTENT-AWARE SELECTION
         # ====================================================
 
         selected = []
@@ -1416,13 +1957,21 @@ class HybridSearch:
                 return
 
             clause_id = normalize_clause_id(
-                result["clause"]
+                result.get(
+                    "clause",
+                    ""
+                )
             )
+
+            if not clause_id:
+                return
 
             if clause_id in selected_ids:
                 return
 
-            selected.append(result)
+            selected.append(
+                result
+            )
 
             selected_ids.add(
                 clause_id
@@ -1449,7 +1998,7 @@ class HybridSearch:
                     break
 
         # ====================================================
-        # AGE MINOR
+        # MINOR
         # ====================================================
 
         elif question_type == "age_minor":
@@ -1492,7 +2041,9 @@ class HybridSearch:
 
             for result in combined_results:
 
-                if result["clause"].startswith("§3."):
+                if result["clause"].startswith(
+                    "§3."
+                ):
 
                     add_result(result)
 
@@ -1500,7 +2051,7 @@ class HybridSearch:
                         break
 
         # ====================================================
-        # CORRECTIONAL EXCLUSION
+        # CORRECTIONAL
         # ====================================================
 
         elif question_type == "correctional_exclusion":
@@ -1554,7 +2105,9 @@ class HybridSearch:
 
             for result in combined_results:
 
-                if result["clause"].startswith("§4."):
+                if result["clause"].startswith(
+                    "§4."
+                ):
 
                     add_result(result)
 
@@ -1585,7 +2138,9 @@ class HybridSearch:
 
             for result in combined_results:
 
-                if result["clause"].startswith("§6."):
+                if result["clause"].startswith(
+                    "§6."
+                ):
 
                     add_result(result)
 
@@ -1619,9 +2174,9 @@ class HybridSearch:
 
             for result in combined_results:
 
-                clause_id = result["clause"]
-
-                if clause_id.startswith("§2.4."):
+                if result["clause"].startswith(
+                    "§2.4."
+                ):
 
                     add_result(result)
 
@@ -1643,7 +2198,9 @@ class HybridSearch:
 
             for result in combined_results:
 
-                if result["clause"].startswith("§8."):
+                if result["clause"].startswith(
+                    "§8."
+                ):
 
                     add_result(result)
 
@@ -1656,61 +2213,26 @@ class HybridSearch:
 
         elif question_type == "administration":
 
-            administration_clause = (
+            add_result(
                 self._make_forced_result(
                     "§1.1.2",
                     score=1.0
                 )
             )
 
-            add_result(
-                administration_clause
-            )
-
             for result in combined_results:
 
-                if result["clause"].startswith("§1."):
+                if result["clause"].startswith(
+                    "§1."
+                ):
 
                     add_result(result)
 
                     if len(selected) >= top_k:
                         break
 
-            # =================================================
-            # FINAL SAFETY GUARANTEE
-            # =================================================
-
-            administration_id = "§1.1.2"
-
-            if administration_id not in selected_ids:
-
-                fallback = None
-
-                for result in combined_results:
-
-                    if (
-                        normalize_clause_id(
-                            result["clause"]
-                        )
-                        == administration_id
-                    ):
-
-                        fallback = result
-                        break
-
-                if fallback is not None:
-
-                    selected.insert(
-                        0,
-                        fallback
-                    )
-
-                    selected_ids.add(
-                        administration_id
-                    )
-
         # ====================================================
-        # GENERAL ELIGIBILITY
+        # ELIGIBILITY
         # ====================================================
 
         elif question_type == "eligibility":
@@ -1737,7 +2259,7 @@ class HybridSearch:
                     break
 
         # ====================================================
-        # GENERAL POLICY
+        # GENERAL
         # ====================================================
 
         else:
@@ -1748,6 +2270,56 @@ class HybridSearch:
 
                 if len(selected) >= top_k:
                     break
+
+        # ====================================================
+        # TEMPORAL METADATA ON SELECTED
+        # ====================================================
+
+        temporal_selected = []
+
+        for result in selected:
+
+            result = (
+                self._apply_temporal_metadata(
+                    result,
+                    determination_date=(
+                        determination_date
+                    ),
+                    event_date=event_date,
+                    rule_type=rule_type
+                )
+            )
+
+            temporal_selected.append(
+                result
+            )
+
+        selected = temporal_selected
+
+        # ====================================================
+        # TEMPORAL METADATA ON RANKED RESULTS
+        # ====================================================
+
+        temporal_combined = []
+
+        for result in combined_results:
+
+            result = (
+                self._apply_temporal_metadata(
+                    result,
+                    determination_date=(
+                        determination_date
+                    ),
+                    event_date=event_date,
+                    rule_type=rule_type
+                )
+            )
+
+            temporal_combined.append(
+                result
+            )
+
+        combined_results = temporal_combined
 
         # ====================================================
         # ANSWERABILITY
@@ -1776,16 +2348,6 @@ class HybridSearch:
             >= STRONG_HYBRID_THRESHOLD
         )
 
-        # ====================================================
-        # IMPORTANT:
-        # Intent-aware forced clauses are trusted only when
-        # there is at least some retrieval support.
-        #
-        # This prevents a random question from becoming
-        # answerable merely because an intent handler forced
-        # a clause.
-        # ====================================================
-
         intent_specific_types = {
             "age_18",
             "age_minor",
@@ -1801,11 +2363,12 @@ class HybridSearch:
         }
 
         intent_has_support = (
-            best["semantic_score"]
-            >= SEMANTIC_THRESHOLD
-            or best["bm25_score"]
+            semantic_ok
+            or
+            best["bm25_score"]
             >= STRONG_BM25_THRESHOLD
-            or best["keyword_score"]
+            or
+            best["keyword_score"]
             >= STRONG_KEYWORD_THRESHOLD
         )
 
@@ -1820,8 +2383,7 @@ class HybridSearch:
 
             answerable = (
                 hybrid_ok
-                and
-                (
+                and (
                     semantic_ok
                     or strong_lexical_support
                 )
@@ -1840,16 +2402,17 @@ class HybridSearch:
                     "sufficiently strong support in "
                     "the policy manual."
                 ),
+                "question_type": question_type,
                 "results": combined_results[:top_k]
             }
 
-            if policy_version:
-
-                response["policy_version"] = (
-                    policy_version
-                )
-
-            return response
+            return self._add_temporal_request_metadata(
+                response,
+                determination_date,
+                event_date,
+                rule_type,
+                policy_version
+            )
 
         # ====================================================
         # ANSWERABLE
@@ -1860,45 +2423,102 @@ class HybridSearch:
             "reason": (
                 "Relevant policy support found."
             ),
+            "question_type": question_type,
             "results": selected[:top_k]
         }
 
-        if policy_version:
-
-            response["policy_version"] = (
-                policy_version
-            )
-
-        return response
+        return self._add_temporal_request_metadata(
+            response,
+            determination_date,
+            event_date,
+            rule_type,
+            policy_version
+        )
 
 
 # ============================================================
-# OPTIONAL STANDALONE TEST
+# STANDALONE TEST
 # ============================================================
 
 if __name__ == "__main__":
 
-    searcher = HybridSearch()
+    try:
 
-    while True:
+        searcher = HybridSearch()
 
-        question = input(
-            "\nEnter your question: "
-        ).strip()
-
-        if question.lower() in {
-            "exit",
-            "quit"
-        }:
-            break
-
-        response = searcher.search(
-            question
+        print(
+            "\n============================================"
         )
 
         print(
+            "Grounded Policy Assistant"
+        )
+
+        print(
+            "Temporal Hybrid Retrieval Engine"
+        )
+
+        print(
+            "============================================"
+        )
+
+        print(
+            "Type 'exit' or 'quit' to stop."
+        )
+
+        while True:
+
+            question = input(
+                "\nEnter your question: "
+            ).strip()
+
+            if question.lower() in {
+                "exit",
+                "quit"
+            }:
+                break
+
+            try:
+
+                response = searcher.search(
+                    question
+                )
+
+                print(
+                    json.dumps(
+                        response,
+                        indent=2,
+                        ensure_ascii=False
+                    )
+                )
+
+            except Exception as exc:
+
+                print(
+                    json.dumps(
+                        {
+                            "answerable": False,
+                            "reason": (
+                                f"Search error: {exc}"
+                            ),
+                            "results": []
+                        },
+                        indent=2,
+                        ensure_ascii=False
+                    )
+                )
+
+    except Exception as exc:
+
+        print(
             json.dumps(
-                response,
+                {
+                    "answerable": False,
+                    "reason": (
+                        f"Initialization error: {exc}"
+                    ),
+                    "results": []
+                },
                 indent=2,
                 ensure_ascii=False
             )

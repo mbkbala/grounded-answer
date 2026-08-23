@@ -4,6 +4,8 @@
 # ============================================================
 
 import json
+import re
+
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -29,6 +31,8 @@ def normalize_clause_reference(clause_id: str) -> str:
         2.1.2
         Â§2.1.2
         Ã‚Â§2.1.2
+        §10.5.3A
+        10.5.3A
     """
 
     if not clause_id:
@@ -36,14 +40,89 @@ def normalize_clause_reference(clause_id: str) -> str:
 
     clause_id = str(clause_id).strip()
 
-    # Fix common UTF-8 mojibake forms.
+    # --------------------------------------------------------
+    # Fix common UTF-8 mojibake
+    # --------------------------------------------------------
+
     clause_id = clause_id.replace("Ã‚Â§", "§")
     clause_id = clause_id.replace("Â§", "§")
+
+    # --------------------------------------------------------
+    # Remove accidental surrounding whitespace
+    # --------------------------------------------------------
+
+    clause_id = clause_id.strip()
+
+    # --------------------------------------------------------
+    # Add section symbol if missing
+    # --------------------------------------------------------
 
     if not clause_id.startswith("§"):
         clause_id = "§" + clause_id
 
     return clause_id
+
+
+# ============================================================
+# EXTRACT CLAUSE REFERENCES FROM TEXT
+# ============================================================
+
+def extract_clause_references(text: str) -> List[str]:
+    """
+    Extract clause references from amendment text.
+
+    Examples detected:
+
+        §10.5.3A
+        10.5.3A
+        §6.4.1(a)
+        10.5.3A A sanction must not...
+
+    The function intentionally supports alphabetic suffixes
+    because amendments may introduce clauses such as:
+
+        10.5.3A
+        10.5.3B
+        10.5.3C
+    """
+
+    if not text:
+        return []
+
+    text = str(text)
+
+    # --------------------------------------------------------
+    # Match optional section symbol followed by:
+    #
+    # number.number
+    # number.number.number
+    # optional alphabetic suffix
+    #
+    # Examples:
+    #   2.1
+    #   2.1.2
+    #   10.5.3A
+    # --------------------------------------------------------
+
+    pattern = r"(?:§\s*)?\d+(?:\.\d+)+(?:[A-Za-z]+)?"
+
+    matches = re.findall(
+        pattern,
+        text
+    )
+
+    results = []
+
+    for match in matches:
+
+        normalized = normalize_clause_reference(
+            match
+        )
+
+        if normalized and normalized not in results:
+            results.append(normalized)
+
+    return results
 
 
 # ============================================================
@@ -57,13 +136,22 @@ class TemporalPolicy:
         amendments_file: Optional[str | Path] = None
     ):
 
+        # ----------------------------------------------------
+        # Project root
+        # ----------------------------------------------------
+
         project_root = (
             Path(__file__)
             .resolve()
             .parents[2]
         )
 
+        # ----------------------------------------------------
+        # Default amendments file
+        # ----------------------------------------------------
+
         if amendments_file is None:
+
             amendments_file = (
                 project_root
                 / "data"
@@ -83,12 +171,30 @@ class TemporalPolicy:
     # ========================================================
 
     def _load_amendments(self) -> None:
+        """
+        Load amendment data from JSON.
+
+        The loader is deliberately tolerant of incomplete
+        amendment metadata.
+
+        A clause may be declared in:
+
+        1. amendment["clauses"]
+        2. change["clauses"]
+        3. amendment/change text
+
+        This is important for newly inserted clauses such as
+        §10.5.3A.
+        """
 
         if not self.amendments_file.exists():
+
             self.amendments = []
+
             return
 
         try:
+
             with self.amendments_file.open(
                 "r",
                 encoding="utf-8"
@@ -96,31 +202,234 @@ class TemporalPolicy:
 
                 data = json.load(file)
 
-        except (OSError, json.JSONDecodeError):
+        except (
+            OSError,
+            json.JSONDecodeError
+        ):
+
             self.amendments = []
+
             return
 
+        # ----------------------------------------------------
+        # Support both:
+        #
+        # {
+        #     "amendments": [...]
+        # }
+        #
+        # and:
+        #
+        # [...]
+        # ----------------------------------------------------
+
         if isinstance(data, dict):
+
             amendments = data.get(
                 "amendments",
                 []
             )
+
         elif isinstance(data, list):
+
             amendments = data
+
         else:
+
             amendments = []
 
         if not isinstance(amendments, list):
+
             amendments = []
 
         self.amendments = amendments
 
-        # Sort oldest -> newest.
+        # ----------------------------------------------------
+        # Normalize amendment metadata
+        # ----------------------------------------------------
+
+        for amendment in self.amendments:
+
+            if not isinstance(amendment, dict):
+                continue
+
+            self._augment_amendment_clause_metadata(
+                amendment
+            )
+
+        # ----------------------------------------------------
+        # Sort oldest -> newest
+        # ----------------------------------------------------
+
         self.amendments.sort(
             key=lambda item: (
-                item.get("effective_date")
-                or "9999-12-31"
+                item.get(
+                    "effective_date",
+                    "9999-12-31"
+                )
+                if isinstance(item, dict)
+                else "9999-12-31"
             )
+        )
+
+    # ========================================================
+    # AUGMENT AMENDMENT CLAUSE METADATA
+    # ========================================================
+
+    def _augment_amendment_clause_metadata(
+        self,
+        amendment: Dict
+    ) -> None:
+        """
+        Build a reliable internal clause list.
+
+        This fixes incomplete amendment metadata without
+        modifying amendments.json itself.
+
+        For example:
+
+        change:
+            "After §10.5.3, insert —
+             10.5.3A A sanction must not..."
+
+        will automatically cause:
+
+            §10.5.3A
+
+        to be recognized as affected by the amendment.
+        """
+
+        discovered = set()
+
+        # ----------------------------------------------------
+        # 1. Existing amendment-level clauses
+        # ----------------------------------------------------
+
+        amendment_clauses = amendment.get(
+            "clauses",
+            []
+        )
+
+        if isinstance(amendment_clauses, list):
+
+            for clause in amendment_clauses:
+
+                normalized = (
+                    normalize_clause_reference(
+                        clause
+                    )
+                )
+
+                if normalized:
+                    discovered.add(normalized)
+
+        # ----------------------------------------------------
+        # 2. Inspect changes
+        # ----------------------------------------------------
+
+        changes = amendment.get(
+            "changes",
+            []
+        )
+
+        if isinstance(changes, list):
+
+            for change in changes:
+
+                if not isinstance(change, dict):
+                    continue
+
+                # --------------------------------------------
+                # Explicit change clauses
+                # --------------------------------------------
+
+                change_clauses = change.get(
+                    "clauses",
+                    []
+                )
+
+                if isinstance(
+                    change_clauses,
+                    list
+                ):
+
+                    for clause in change_clauses:
+
+                        normalized = (
+                            normalize_clause_reference(
+                                clause
+                            )
+                        )
+
+                        if normalized:
+                            discovered.add(
+                                normalized
+                            )
+
+                # --------------------------------------------
+                # Extract clauses from change text
+                # --------------------------------------------
+
+                change_text = change.get(
+                    "text",
+                    ""
+                )
+
+                for clause in extract_clause_references(
+                    change_text
+                ):
+
+                    discovered.add(clause)
+
+        # ----------------------------------------------------
+        # 3. Extract clauses from complete amendment text
+        # ----------------------------------------------------
+
+        amendment_text = amendment.get(
+            "text",
+            ""
+        )
+
+        for clause in extract_clause_references(
+            amendment_text
+        ):
+
+            discovered.add(clause)
+
+        # ----------------------------------------------------
+        # Save augmented metadata
+        #
+        # Keep original order where possible, then append
+        # newly discovered clauses.
+        # ----------------------------------------------------
+
+        existing_order = []
+
+        if isinstance(
+            amendment_clauses,
+            list
+        ):
+
+            for clause in amendment_clauses:
+
+                normalized = (
+                    normalize_clause_reference(
+                        clause
+                    )
+                )
+
+                if normalized:
+                    existing_order.append(
+                        normalized
+                    )
+
+        for clause in sorted(discovered):
+
+            if clause not in existing_order:
+                existing_order.append(clause)
+
+        amendment["_normalized_clauses"] = (
+            existing_order
         )
 
     # ========================================================
@@ -136,11 +445,19 @@ class TemporalPolicy:
         the requested date.
         """
 
-        target_date = parse_date(as_of)
+        target_date = parse_date(
+            as_of
+        )
 
         active = []
 
         for amendment in self.amendments:
+
+            if not isinstance(
+                amendment,
+                dict
+            ):
+                continue
 
             effective_date = amendment.get(
                 "effective_date"
@@ -150,15 +467,23 @@ class TemporalPolicy:
                 continue
 
             try:
+
                 amendment_date = parse_date(
                     effective_date
                 )
 
-            except (ValueError, TypeError):
+            except (
+                ValueError,
+                TypeError
+            ):
+
                 continue
 
             if amendment_date <= target_date:
-                active.append(amendment)
+
+                active.append(
+                    amendment
+                )
 
         return active
 
@@ -204,11 +529,15 @@ class TemporalPolicy:
         """
         Return amendment history for a specific clause.
 
-        Example:
-            get_clause_history("§2.1.2")
+        The search checks:
 
-        If as_of is supplied, only amendments effective
-        on or before that date are returned.
+        1. Normalized amendment clause metadata
+        2. Explicit change clause metadata
+        3. Amendment text
+        4. Change text
+
+        This allows newly inserted clauses such as
+        §10.5.3A to be discovered automatically.
         """
 
         requested_clause = (
@@ -219,7 +548,38 @@ class TemporalPolicy:
 
         results = []
 
+        # ----------------------------------------------------
+        # Optional target date
+        # ----------------------------------------------------
+
+        target_date = None
+
+        if as_of:
+
+            try:
+
+                target_date = parse_date(
+                    as_of
+                )
+
+            except (
+                ValueError,
+                TypeError
+            ):
+
+                return []
+
+        # ----------------------------------------------------
+        # Search amendments
+        # ----------------------------------------------------
+
         for amendment in self.amendments:
+
+            if not isinstance(
+                amendment,
+                dict
+            ):
+                continue
 
             effective_date = amendment.get(
                 "effective_date"
@@ -232,7 +592,7 @@ class TemporalPolicy:
             # Respect requested date
             # ------------------------------------------------
 
-            if as_of:
+            if target_date is not None:
 
                 try:
 
@@ -240,69 +600,160 @@ class TemporalPolicy:
                         effective_date
                     )
 
-                    target_date = parse_date(
-                        as_of
-                    )
+                except (
+                    ValueError,
+                    TypeError
+                ):
 
-                    if amendment_date > target_date:
-                        continue
-
-                except (ValueError, TypeError):
                     continue
 
+                if amendment_date > target_date:
+                    continue
+
+            found = False
+
             # ------------------------------------------------
-            # Check direct clause list
+            # 1. Check augmented amendment metadata
             # ------------------------------------------------
 
-            clauses = amendment.get(
-                "clauses",
+            normalized_clauses = amendment.get(
+                "_normalized_clauses",
                 []
             )
 
-            normalized_clauses = {
-                normalize_clause_reference(
-                    clause
-                )
-                for clause in clauses
-            }
+            if isinstance(
+                normalized_clauses,
+                list
+            ):
 
-            if requested_clause in normalized_clauses:
+                if requested_clause in normalized_clauses:
 
-                results.append(amendment)
-
-                continue
+                    found = True
 
             # ------------------------------------------------
-            # Check individual changes
+            # 2. Check change-level clauses
             # ------------------------------------------------
 
-            changes = amendment.get(
-                "changes",
-                []
-            )
+            if not found:
 
-            for change in changes:
-
-                if not isinstance(change, dict):
-                    continue
-
-                change_clauses = change.get(
-                    "clauses",
+                changes = amendment.get(
+                    "changes",
                     []
                 )
 
-                normalized_change_clauses = {
-                    normalize_clause_reference(
-                        clause
+                if isinstance(
+                    changes,
+                    list
+                ):
+
+                    for change in changes:
+
+                        if not isinstance(
+                            change,
+                            dict
+                        ):
+                            continue
+
+                        change_clauses = change.get(
+                            "clauses",
+                            []
+                        )
+
+                        if not isinstance(
+                            change_clauses,
+                            list
+                        ):
+                            continue
+
+                        normalized_change_clauses = {
+                            normalize_clause_reference(
+                                clause
+                            )
+                            for clause
+                            in change_clauses
+                        }
+
+                        if (
+                            requested_clause
+                            in normalized_change_clauses
+                        ):
+
+                            found = True
+                            break
+
+            # ------------------------------------------------
+            # 3. Search complete amendment text
+            # ------------------------------------------------
+
+            if not found:
+
+                amendment_text = amendment.get(
+                    "text",
+                    ""
+                )
+
+                extracted = (
+                    extract_clause_references(
+                        amendment_text
                     )
-                    for clause in change_clauses
-                }
+                )
 
-                if requested_clause in normalized_change_clauses:
+                if requested_clause in extracted:
 
-                    results.append(amendment)
+                    found = True
 
-                    break
+            # ------------------------------------------------
+            # 4. Search change text
+            # ------------------------------------------------
+
+            if not found:
+
+                changes = amendment.get(
+                    "changes",
+                    []
+                )
+
+                if isinstance(
+                    changes,
+                    list
+                ):
+
+                    for change in changes:
+
+                        if not isinstance(
+                            change,
+                            dict
+                        ):
+                            continue
+
+                        change_text = change.get(
+                            "text",
+                            ""
+                        )
+
+                        extracted = (
+                            extract_clause_references(
+                                change_text
+                            )
+                        )
+
+                        if (
+                            requested_clause
+                            in extracted
+                        ):
+
+                            found = True
+                            break
+
+            # ------------------------------------------------
+            # Add amendment to history
+            # ------------------------------------------------
+
+            if found:
+
+                results.append(
+                    amendment
+                )
 
         return results
 
@@ -328,6 +779,7 @@ class TemporalPolicy:
         latest = None
 
         if history:
+
             latest = max(
                 history,
                 key=lambda item: (
@@ -343,8 +795,12 @@ class TemporalPolicy:
                 clause_id
             ),
             "as_of": as_of,
-            "has_history": bool(history),
-            "history_count": len(history),
+            "has_history": bool(
+                history
+            ),
+            "history_count": len(
+                history
+            ),
             "latest_amendment": latest,
             "history": history
         }
@@ -375,7 +831,9 @@ class TemporalPolicy:
 
         return {
             "as_of": as_of,
-            "amendments_active": len(active),
+            "amendments_active": len(
+                active
+            ),
             "latest_amendment": latest,
             "amendments": active
         }
@@ -424,7 +882,9 @@ class TemporalPolicy:
                 f"(effective {effective_date})"
             )
 
-        return "\n".join(lines)
+        return "\n".join(
+            lines
+        )
 
 
 # ============================================================
@@ -440,3 +900,26 @@ if __name__ == "__main__":
             "2026-08-23"
         )
     )
+
+    print(
+        "\n=== NEW CLAUSE TEST ==="
+    )
+
+    history = policy.get_clause_history(
+        "§10.5.3A"
+    )
+
+    print(
+        f"History count: {len(history)}"
+    )
+
+    for amendment in history:
+
+        print(
+            amendment.get(
+                "amendment_id"
+            ),
+            amendment.get(
+                "effective_date"
+            )
+        )
