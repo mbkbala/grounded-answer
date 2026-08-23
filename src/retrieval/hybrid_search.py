@@ -42,11 +42,14 @@ CLAUSES_FILE = PROJECT_ROOT / "data" / "clauses.json"
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 
-# Retrieval thresholds
+
+# ============================================================
+# RETRIEVAL THRESHOLDS
+# ============================================================
+
 SEMANTIC_THRESHOLD = 0.30
 HYBRID_THRESHOLD = 0.45
 
-# Lexical fallback
 STRONG_BM25_THRESHOLD = 5.0
 STRONG_KEYWORD_THRESHOLD = 0.75
 STRONG_HYBRID_THRESHOLD = 0.60
@@ -58,7 +61,7 @@ STRONG_HYBRID_THRESHOLD = 0.60
 
 def tokenize(text: str) -> List[str]:
     """
-    Normalize text into simple lowercase tokens.
+    Normalize text into lowercase alphanumeric tokens.
     """
 
     if not text:
@@ -101,7 +104,6 @@ def normalize_clause_id(clause_id: str) -> str:
     Normalize clause IDs.
 
     Examples:
-
         2.4       -> §2.4
         §2.4      -> §2.4
         2.1.2     -> §2.1.2
@@ -128,12 +130,9 @@ def get_parent_section(clause_id: str) -> Optional[str]:
     Convert a child clause into its parent section.
 
     Examples:
-
         §2.4.1 -> §2.4
         §2.4.2 -> §2.4
         §2.4.3 -> §2.4
-
-    Returns None if there is no subsection.
     """
 
     normalized = normalize_clause_id(clause_id)
@@ -162,9 +161,9 @@ def get_question_type(question: str) -> str:
 
     q = question.lower().strip()
 
-    # --------------------------------------------------------
+    # ========================================================
     # DIRECT CLAUSE REFERENCE
-    # --------------------------------------------------------
+    # ========================================================
 
     if re.search(
         r"§\d+(?:\.\d+){1,2}",
@@ -172,9 +171,9 @@ def get_question_type(question: str) -> str:
     ):
         return "clause_reference"
 
-    # --------------------------------------------------------
+    # ========================================================
     # OUTSIDE POLICY
-    # --------------------------------------------------------
+    # ========================================================
 
     outside_policy_terms = {
         "weather",
@@ -193,32 +192,34 @@ def get_question_type(question: str) -> str:
         "music",
     }
 
-    if any(term in q for term in outside_policy_terms):
+    question_tokens = set(tokenize(q))
+
+    if question_tokens.intersection(outside_policy_terms):
         return "outside_policy"
 
-    # --------------------------------------------------------
+    # ========================================================
     # CORRECTIONAL FACILITY
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
         "correctional facility" in q
-        or "detained" in q
-        or "detention" in q
-        or "jail" in q
-        or "prison" in q
+        or re.search(r"\bdetained\b", q)
+        or re.search(r"\bdetention\b", q)
+        or re.search(r"\bjail\b", q)
+        or re.search(r"\bprison\b", q)
     ):
         return "correctional_exclusion"
 
-    # --------------------------------------------------------
+    # ========================================================
     # SANCTION
-    # --------------------------------------------------------
+    # ========================================================
 
-    if "sanction" in q:
+    if re.search(r"\bsanction\b", q):
         return "sanction_exclusion"
 
-    # --------------------------------------------------------
+    # ========================================================
     # GENERAL EXCLUSION
-    # --------------------------------------------------------
+    # ========================================================
 
     exclusion_terms = {
         "excluded",
@@ -229,43 +230,106 @@ def get_question_type(question: str) -> str:
         "ineligible",
     }
 
-    if any(term in q for term in exclusion_terms):
+    if any(
+        term in q
+        for term in exclusion_terms
+    ):
         return "exclusion"
 
-    # --------------------------------------------------------
-    # AGE
-    # --------------------------------------------------------
+    # ========================================================
+    # AGE 18
+    # ========================================================
 
     if re.search(
-        r"\b18\s*(?:years?\s*old|year-old)\b",
+        r"\b18\s+(?:years?\s+old|year-old)\b",
+        q
+    ):
+        return "age_18"
+
+    # Also handle:
+    # "age 18"
+    # "at 18"
+    # "18 years"
+
+    if re.search(
+        r"\bage\s+18\b",
         q
     ):
         return "age_18"
 
     if re.search(
-        r"\b17\s*(?:years?\s*old|year-old)\b",
+        r"\bat\s+18\b",
+        q
+    ):
+        return "age_18"
+
+    # ========================================================
+    # AGE 17
+    # ========================================================
+
+    if re.search(
+        r"\b17\s+(?:years?\s+old|year-old)\b",
         q
     ):
         return "age_minor"
 
     if re.search(
-        r"\b16\s*(?:years?\s*old|year-old)\b",
+        r"\bage\s+17\b",
         q
     ):
         return "age_minor"
 
-    if "under 18" in q:
+    # ========================================================
+    # AGE 16
+    # ========================================================
+
+    if re.search(
+        r"\b16\s+(?:years?\s+old|year-old)\b",
+        q
+    ):
         return "age_minor"
 
-    if "minor" in q:
+    if re.search(
+        r"\bage\s+16\b",
+        q
+    ):
         return "age_minor"
 
-    if "age" in q or "aged" in q:
+    # ========================================================
+    # MINOR / UNDER 18
+    # ========================================================
+
+    if re.search(
+        r"\bunder\s+18\b",
+        q
+    ):
+        return "age_minor"
+
+    if re.search(
+        r"\bminor\b",
+        q
+    ):
+        return "age_minor"
+
+    # ========================================================
+    # GENERIC AGE
+    # ========================================================
+
+    if re.search(
+        r"\bage\b",
+        q
+    ):
         return "age"
 
-    # --------------------------------------------------------
+    if re.search(
+        r"\baged\b",
+        q
+    ):
+        return "age"
+
+    # ========================================================
     # RESIDENCE
-    # --------------------------------------------------------
+    # ========================================================
 
     residence_terms = {
         "residence",
@@ -279,7 +343,10 @@ def get_question_type(question: str) -> str:
     }
 
     if (
-        any(term in q for term in residence_terms)
+        any(
+            term in question_tokens
+            for term in residence_terms
+        )
         and (
             "qualify" in q
             or "eligible" in q
@@ -291,47 +358,78 @@ def get_question_type(question: str) -> str:
     ):
         return "residence"
 
-    # --------------------------------------------------------
+    # ========================================================
     # INCOME
-    # --------------------------------------------------------
+    # ========================================================
 
-    if "income" in q:
+    if re.search(
+        r"\bincome\b",
+        q
+    ):
         return "income"
 
-    # --------------------------------------------------------
+    # ========================================================
     # RESOURCES
-    # --------------------------------------------------------
-
-    if "resource" in q or "resources" in q:
-        return "resources"
-
-    # --------------------------------------------------------
-    # APPLICATION
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
-        "application" in q
-        or "apply" in q
-        or "application requirement" in q
+        re.search(r"\bresource\b", q)
+        or re.search(r"\bresources\b", q)
+    ):
+        return "resources"
+
+    # ========================================================
+    # APPLICATION
+    # ========================================================
+
+    if (
+        re.search(r"\bapplication\b", q)
+        or re.search(r"\bapply\b", q)
+        or "submit an application" in q
     ):
         return "application"
 
-    # --------------------------------------------------------
+    # ========================================================
     # ADMINISTRATION
-    # --------------------------------------------------------
+    # ========================================================
 
-    if (
-        "administer" in q
-        or "administers" in q
-        or "administration" in q
-        or "department" in q
-        or "caseworker" in q
+    administration_phrases = {
+        "administer",
+        "administers",
+        "administered",
+        "administering",
+        "administration",
+        "department",
+        "caseworker",
+        "manages",
+        "manage",
+        "manager",
+        "agency",
+        "agencies",
+        "runs",
+        "run",
+        "handles",
+        "handle",
+        "responsible",
+    }
+
+    if any(
+        phrase in question_tokens
+        for phrase in administration_phrases
+        if " " not in phrase and "-" not in phrase
     ):
         return "administration"
 
-    # --------------------------------------------------------
+    if (
+        "in charge" in q
+        or "day-to-day" in q
+        or "day to day" in q
+    ):
+        return "administration"
+
+    # ========================================================
     # GENERAL ELIGIBILITY
-    # --------------------------------------------------------
+    # ========================================================
 
     eligibility_terms = {
         "eligibility",
@@ -343,12 +441,15 @@ def get_question_type(question: str) -> str:
         "conditions",
     }
 
-    if any(term in q for term in eligibility_terms):
+    if any(
+        term in question_tokens
+        for term in eligibility_terms
+    ):
         return "eligibility"
 
-    # --------------------------------------------------------
+    # ========================================================
     # GENERAL POLICY
-    # --------------------------------------------------------
+    # ========================================================
 
     policy_terms = {
         "assistance",
@@ -365,8 +466,12 @@ def get_question_type(question: str) -> str:
         "manual",
     }
 
-    if any(term in q for term in policy_terms):
+    if question_tokens.intersection(policy_terms):
         return "general"
+
+    # ========================================================
+    # DEFAULT
+    # ========================================================
 
     return "outside_policy"
 
@@ -394,6 +499,10 @@ def keyword_overlap(
     question: str,
     text: str
 ) -> float:
+    """
+    Calculate overlap between important question terms
+    and important terms in the clause.
+    """
 
     question_tokens = set(tokenize(question))
     text_tokens = set(tokenize(text))
@@ -428,8 +537,20 @@ def keyword_overlap(
         "misrepresentation",
         "administered",
         "administer",
+        "administering",
+        "administration",
         "department",
         "caseworker",
+        "agency",
+        "agencies",
+        "manage",
+        "manages",
+        "manager",
+        "runs",
+        "run",
+        "handles",
+        "handle",
+        "responsible",
         "program",
         "award",
         "recipient",
@@ -476,9 +597,9 @@ class HybridSearch:
 
     def __init__(self):
 
-        # ----------------------------------------------------
-        # Load clauses
-        # ----------------------------------------------------
+        # ====================================================
+        # LOAD CLAUSES
+        # ====================================================
 
         if not CLAUSES_FILE.exists():
             raise FileNotFoundError(
@@ -497,20 +618,19 @@ class HybridSearch:
                 "No policy clauses were loaded."
             )
 
-        # ----------------------------------------------------
-        # Normalize clause IDs
-        # ----------------------------------------------------
+        # ====================================================
+        # NORMALIZE CLAUSE IDs
+        # ====================================================
 
         for clause in self.clauses:
-
             if "clause" in clause:
                 clause["clause"] = normalize_clause_id(
                     clause["clause"]
                 )
 
-        # ----------------------------------------------------
-        # Clause lookup
-        # ----------------------------------------------------
+        # ====================================================
+        # CLAUSE LOOKUP
+        # ====================================================
 
         self.clause_lookup = {
             clause["clause"]: clause
@@ -518,15 +638,9 @@ class HybridSearch:
             if "clause" in clause
         }
 
-        # ----------------------------------------------------
-        # Create parent section index
-        #
-        # Example:
-        #
-        # §2.4.1 -> §2.4
-        # §2.4.2 -> §2.4
-        # §2.4.3 -> §2.4
-        # ----------------------------------------------------
+        # ====================================================
+        # PARENT SECTION INDEX
+        # ====================================================
 
         self.section_children: Dict[str, List[dict]] = {}
 
@@ -539,15 +653,14 @@ class HybridSearch:
             )
 
             if parent:
-
                 self.section_children.setdefault(
                     parent,
                     []
                 ).append(clause)
 
-        # ----------------------------------------------------
+        # ====================================================
         # BM25
-        # ----------------------------------------------------
+        # ====================================================
 
         self.tokenized_clauses = [
             tokenize(clause["text"])
@@ -558,9 +671,9 @@ class HybridSearch:
             self.tokenized_clauses
         )
 
-        # ----------------------------------------------------
-        # Semantic model
-        # ----------------------------------------------------
+        # ====================================================
+        # SEMANTIC MODEL
+        # ====================================================
 
         print("Loading semantic model...")
 
@@ -593,16 +706,15 @@ class HybridSearch:
             f"Loaded {len(self.clauses)} policy clauses."
         )
 
-        # ----------------------------------------------------
-        # Temporal policy engine
-        # ----------------------------------------------------
+        # ====================================================
+        # TEMPORAL POLICY ENGINE
+        # ====================================================
 
         self.temporal_policy = None
 
         if TemporalPolicy is not None:
 
             try:
-
                 self.temporal_policy = TemporalPolicy()
 
                 print(
@@ -623,7 +735,7 @@ class HybridSearch:
     def get_policy_version(
         self,
         as_of_date: Optional[str] = None
-    ) -> Optional[str]:
+    ) -> Optional[dict]:
 
         if self.temporal_policy is None:
             return None
@@ -633,12 +745,80 @@ class HybridSearch:
 
         try:
 
-            return self.temporal_policy.explain(
-                as_of_date
-            )
+            if hasattr(
+                self.temporal_policy,
+                "get_policy_version"
+            ):
+
+                version = (
+                    self.temporal_policy
+                    .get_policy_version(
+                        as_of_date
+                    )
+                )
+
+                if isinstance(version, dict):
+                    return version
+
+            active_amendments = []
+
+            if hasattr(
+                self.temporal_policy,
+                "get_active_amendments"
+            ):
+
+                active_amendments = (
+                    self.temporal_policy
+                    .get_active_amendments(
+                        as_of_date
+                    )
+                )
+
+            if not isinstance(
+                active_amendments,
+                list
+            ):
+                active_amendments = []
+
+            latest = None
+
+            if hasattr(
+                self.temporal_policy,
+                "get_latest_amendment"
+            ):
+
+                latest = (
+                    self.temporal_policy
+                    .get_latest_amendment(
+                        as_of_date
+                    )
+                )
+
+            explanation = None
+
+            if hasattr(
+                self.temporal_policy,
+                "explain"
+            ):
+
+                explanation = (
+                    self.temporal_policy
+                    .explain(
+                        as_of_date
+                    )
+                )
+
+            return {
+                "as_of_date": as_of_date,
+                "amendments_active": len(
+                    active_amendments
+                ),
+                "active_amendments": active_amendments,
+                "latest_amendment": latest,
+                "explanation": explanation,
+            }
 
         except Exception:
-
             return None
 
     # ========================================================
@@ -655,9 +835,13 @@ class HybridSearch:
             question
         )
 
-        # ----------------------------------------------------
+        clause_id = normalize_clause_id(
+            clause_id
+        )
+
+        # ====================================================
         # EXACT CLAUSE REFERENCE
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "clause_reference":
 
@@ -665,17 +849,19 @@ class HybridSearch:
                 question
             )
 
-            if normalize_clause_id(clause_id) in [
+            normalized_refs = [
                 normalize_clause_id(ref)
                 for ref in references
-            ]:
+            ]
+
+            if clause_id in normalized_refs:
                 return 1.00
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # CORRECTIONAL EXCLUSION
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "correctional_exclusion":
 
@@ -687,9 +873,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # SANCTION EXCLUSION
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "sanction_exclusion":
 
@@ -701,9 +887,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # GENERAL EXCLUSION
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "exclusion":
 
@@ -718,9 +904,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # AGE 18
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "age_18":
 
@@ -732,9 +918,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
-        # AGE 16 / 17
-        # ----------------------------------------------------
+        # ====================================================
+        # AGE MINOR
+        # ====================================================
 
         if question_type == "age_minor":
 
@@ -752,9 +938,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # GENERIC AGE
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "age":
 
@@ -769,9 +955,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # RESIDENCE
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "residence":
 
@@ -783,11 +969,17 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # INCOME
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "income":
+
+            if (
+                "disregard" in question.lower()
+                and clause_id == "§6.4.1"
+            ):
+                return 0.95
 
             if clause_id == "§2.1.2":
                 return 0.55
@@ -797,29 +989,26 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # RESOURCES
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "resources":
 
-            # Parent section gets strongest boost.
             if clause_id == "§2.4":
                 return 0.80
 
-            # Eligibility context.
             if clause_id == "§2.1.2":
                 return 0.55
 
-            # Child resource clauses.
             if clause_id.startswith("§2.4."):
                 return 0.35
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # APPLICATION
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "application":
 
@@ -831,9 +1020,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # ADMINISTRATION
-        # ----------------------------------------------------
+        # ========================================================
 
         if question_type == "administration":
 
@@ -845,9 +1034,9 @@ class HybridSearch:
 
             return 0.0
 
-        # ----------------------------------------------------
+        # ====================================================
         # GENERAL ELIGIBILITY
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "eligibility":
 
@@ -877,7 +1066,7 @@ class HybridSearch:
     def _make_forced_result(
         self,
         clause_id: str,
-        expanded_from: str = None,
+        expanded_from: Optional[str] = None,
         score: float = 1.0
     ):
 
@@ -914,33 +1103,10 @@ class HybridSearch:
         section_id: str,
         score: float = 1.0
     ):
-        """
-        Build a section-level result when the policy data contains
-        subsection clauses but no explicit parent section.
-
-        Example:
-
-            §2.4.1
-            §2.4.2
-            §2.4.3
-
-        but no:
-
-            §2.4
-
-        The section result is created from the child clauses.
-
-        This allows retrieval to represent the policy hierarchy
-        without modifying clauses.json.
-        """
 
         section_id = normalize_clause_id(
             section_id
         )
-
-        # ----------------------------------------------------
-        # If real section exists, use it.
-        # ----------------------------------------------------
 
         real_section = self.clause_lookup.get(
             section_id
@@ -958,10 +1124,6 @@ class HybridSearch:
 
             return result
 
-        # ----------------------------------------------------
-        # Otherwise construct from child clauses.
-        # ----------------------------------------------------
-
         children = self.section_children.get(
             section_id,
             []
@@ -970,7 +1132,6 @@ class HybridSearch:
         if not children:
             return None
 
-        # Preserve policy order.
         children = sorted(
             children,
             key=lambda item: item["clause"]
@@ -994,7 +1155,7 @@ class HybridSearch:
             combined_text_parts
         )
 
-        result = {
+        return {
             "clause": section_id,
             "text": combined_text,
             "synthetic_section": True,
@@ -1009,8 +1170,6 @@ class HybridSearch:
             "hybrid_score": score,
         }
 
-        return result
-
     # ========================================================
     # SEARCH
     # ========================================================
@@ -1024,9 +1183,9 @@ class HybridSearch:
 
         question = question.strip()
 
-        # ----------------------------------------------------
-        # Empty question
-        # ----------------------------------------------------
+        # ====================================================
+        # EMPTY QUESTION
+        # ====================================================
 
         if not question:
 
@@ -1036,9 +1195,9 @@ class HybridSearch:
                 "results": []
             }
 
-        # ----------------------------------------------------
+        # ====================================================
         # POLICY SCOPE GATE
-        # ----------------------------------------------------
+        # ====================================================
 
         if not is_policy_question(question):
 
@@ -1055,17 +1214,17 @@ class HybridSearch:
             question
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # TEMPORAL POLICY INFORMATION
-        # ----------------------------------------------------
+        # ====================================================
 
         policy_version = self.get_policy_version(
             as_of_date
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # DIRECT CLAUSE REFERENCE
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "clause_reference":
 
@@ -1081,14 +1240,11 @@ class HybridSearch:
                     ref
                 )
 
-                # First try actual clause.
                 result = self._make_forced_result(
                     normalized_ref,
                     score=1.0
                 )
 
-                # If parent section isn't explicitly stored,
-                # resolve it from child clauses.
                 if result is None:
 
                     result = self._make_section_result(
@@ -1116,9 +1272,18 @@ class HybridSearch:
 
                 return response
 
-        # ----------------------------------------------------
+            return {
+                "answerable": False,
+                "reason": (
+                    "The referenced policy clause "
+                    "could not be found."
+                ),
+                "results": []
+            }
+
+        # ====================================================
         # BM25
-        # ----------------------------------------------------
+        # ====================================================
 
         query_tokens = tokenize(
             question
@@ -1128,9 +1293,9 @@ class HybridSearch:
             query_tokens
         )
 
-        # ----------------------------------------------------
-        # Semantic similarity
-        # ----------------------------------------------------
+        # ====================================================
+        # SEMANTIC SIMILARITY
+        # ====================================================
 
         query_embedding = self.model.encode(
             [question],
@@ -1145,9 +1310,9 @@ class HybridSearch:
 
         semantic_scores = semantic_scores[0]
 
-        # ----------------------------------------------------
-        # Normalize BM25
-        # ----------------------------------------------------
+        # ====================================================
+        # NORMALIZE BM25
+        # ====================================================
 
         max_bm25 = max(
             bm25_scores
@@ -1167,9 +1332,9 @@ class HybridSearch:
                 for _ in bm25_scores
             ]
 
-        # ----------------------------------------------------
-        # Hybrid scoring
-        # ----------------------------------------------------
+        # ====================================================
+        # HYBRID SCORING
+        # ====================================================
 
         combined_results = []
 
@@ -1220,9 +1385,9 @@ class HybridSearch:
                 result
             )
 
-        # ----------------------------------------------------
-        # Rank
-        # ----------------------------------------------------
+        # ====================================================
+        # RANK
+        # ====================================================
 
         combined_results.sort(
             key=lambda item: item["hybrid_score"],
@@ -1263,9 +1428,9 @@ class HybridSearch:
                 clause_id
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # AGE 18
-        # ----------------------------------------------------
+        # ====================================================
 
         if question_type == "age_18":
 
@@ -1281,12 +1446,11 @@ class HybridSearch:
                 if result["clause"] == "§2.1.1":
 
                     add_result(result)
-
                     break
 
-        # ----------------------------------------------------
-        # AGE 16 / 17
-        # ----------------------------------------------------
+        # ====================================================
+        # AGE MINOR
+        # ====================================================
 
         elif question_type == "age_minor":
 
@@ -1313,9 +1477,9 @@ class HybridSearch:
                 )
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # RESIDENCE
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "residence":
 
@@ -1335,9 +1499,9 @@ class HybridSearch:
                     if len(selected) >= top_k:
                         break
 
-        # ----------------------------------------------------
-        # CORRECTIONAL FACILITY
-        # ----------------------------------------------------
+        # ====================================================
+        # CORRECTIONAL EXCLUSION
+        # ====================================================
 
         elif question_type == "correctional_exclusion":
 
@@ -1353,12 +1517,11 @@ class HybridSearch:
                 if result["clause"] == "§2.1.2":
 
                     add_result(result)
-
                     break
 
-        # ----------------------------------------------------
+        # ====================================================
         # SANCTION
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "sanction_exclusion":
 
@@ -1374,12 +1537,11 @@ class HybridSearch:
                 if result["clause"] == "§2.1.2":
 
                     add_result(result)
-
                     break
 
-        # ----------------------------------------------------
+        # ====================================================
         # GENERAL EXCLUSION
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "exclusion":
 
@@ -1399,16 +1561,25 @@ class HybridSearch:
                     if len(selected) >= top_k:
                         break
 
-        # ----------------------------------------------------
+        # ====================================================
         # INCOME
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "income":
+
+            if "disregard" in question.lower():
+
+                add_result(
+                    self._make_forced_result(
+                        "§6.4.1",
+                        score=1.0
+                    )
+                )
 
             add_result(
                 self._make_forced_result(
                     "§2.1.2",
-                    score=1.0
+                    score=0.90
                 )
             )
 
@@ -1421,32 +1592,11 @@ class HybridSearch:
                     if len(selected) >= top_k:
                         break
 
-        # ----------------------------------------------------
+        # ====================================================
         # RESOURCES
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "resources":
-
-            # =================================================
-            # FIX FOR TEST 08
-            # =================================================
-            #
-            # First resolve the actual §2.4 section.
-            #
-            # If clauses.json contains §2.4:
-            #     use it directly.
-            #
-            # If clauses.json only contains:
-            #     §2.4.1
-            #     §2.4.2
-            #     §2.4.3
-            #
-            # create a section-level result:
-            #
-            #     §2.4
-            #
-            # from those children.
-            # =================================================
 
             resource_section = (
                 self._make_section_result(
@@ -1459,10 +1609,6 @@ class HybridSearch:
                 resource_section
             )
 
-            # ------------------------------------------------
-            # General eligibility context
-            # ------------------------------------------------
-
             add_result(
                 self._make_forced_result(
                     "§2.1.2",
@@ -1470,10 +1616,6 @@ class HybridSearch:
                     score=0.90
                 )
             )
-
-            # ------------------------------------------------
-            # Add specific resource subsections
-            # ------------------------------------------------
 
             for result in combined_results:
 
@@ -1486,9 +1628,9 @@ class HybridSearch:
                     if len(selected) >= top_k:
                         break
 
-        # ----------------------------------------------------
+        # ====================================================
         # APPLICATION
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "application":
 
@@ -1508,17 +1650,21 @@ class HybridSearch:
                     if len(selected) >= top_k:
                         break
 
-        # ----------------------------------------------------
+        # ====================================================
         # ADMINISTRATION
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "administration":
 
-            add_result(
+            administration_clause = (
                 self._make_forced_result(
                     "§1.1.2",
                     score=1.0
                 )
+            )
+
+            add_result(
+                administration_clause
             )
 
             for result in combined_results:
@@ -1530,9 +1676,42 @@ class HybridSearch:
                     if len(selected) >= top_k:
                         break
 
-        # ----------------------------------------------------
+            # =================================================
+            # FINAL SAFETY GUARANTEE
+            # =================================================
+
+            administration_id = "§1.1.2"
+
+            if administration_id not in selected_ids:
+
+                fallback = None
+
+                for result in combined_results:
+
+                    if (
+                        normalize_clause_id(
+                            result["clause"]
+                        )
+                        == administration_id
+                    ):
+
+                        fallback = result
+                        break
+
+                if fallback is not None:
+
+                    selected.insert(
+                        0,
+                        fallback
+                    )
+
+                    selected_ids.add(
+                        administration_id
+                    )
+
+        # ====================================================
         # GENERAL ELIGIBILITY
-        # ----------------------------------------------------
+        # ====================================================
 
         elif question_type == "eligibility":
 
@@ -1557,9 +1736,9 @@ class HybridSearch:
                 if len(selected) >= top_k:
                     break
 
-        # ----------------------------------------------------
-        # GENERAL POLICY QUESTION
-        # ----------------------------------------------------
+        # ====================================================
+        # GENERAL POLICY
+        # ====================================================
 
         else:
 
@@ -1573,48 +1752,6 @@ class HybridSearch:
         # ====================================================
         # ANSWERABILITY
         # ====================================================
-
-        intent_specific_types = {
-            "age_18",
-            "age_minor",
-            "residence",
-            "correctional_exclusion",
-            "sanction_exclusion",
-            "exclusion",
-            "income",
-            "resources",
-            "application",
-            "administration",
-            "eligibility",
-        }
-
-        # ----------------------------------------------------
-        # Intent-specific questions
-        # ----------------------------------------------------
-
-        if question_type in intent_specific_types:
-
-            if selected:
-
-                response = {
-                    "answerable": True,
-                    "reason": (
-                        "Relevant policy support found."
-                    ),
-                    "results": selected[:top_k]
-                }
-
-                if policy_version:
-
-                    response["policy_version"] = (
-                        policy_version
-                    )
-
-                return response
-
-        # ----------------------------------------------------
-        # Generic answerability gate
-        # ----------------------------------------------------
 
         best = combined_results[0]
 
@@ -1639,18 +1776,60 @@ class HybridSearch:
             >= STRONG_HYBRID_THRESHOLD
         )
 
-        answerable = (
-            hybrid_ok
-            and
-            (
-                semantic_ok
-                or strong_lexical_support
-            )
+        # ====================================================
+        # IMPORTANT:
+        # Intent-aware forced clauses are trusted only when
+        # there is at least some retrieval support.
+        #
+        # This prevents a random question from becoming
+        # answerable merely because an intent handler forced
+        # a clause.
+        # ====================================================
+
+        intent_specific_types = {
+            "age_18",
+            "age_minor",
+            "residence",
+            "correctional_exclusion",
+            "sanction_exclusion",
+            "exclusion",
+            "income",
+            "resources",
+            "application",
+            "administration",
+            "eligibility",
+        }
+
+        intent_has_support = (
+            best["semantic_score"]
+            >= SEMANTIC_THRESHOLD
+            or best["bm25_score"]
+            >= STRONG_BM25_THRESHOLD
+            or best["keyword_score"]
+            >= STRONG_KEYWORD_THRESHOLD
         )
 
-        # ----------------------------------------------------
-        # Not answerable
-        # ----------------------------------------------------
+        if question_type in intent_specific_types:
+
+            answerable = (
+                bool(selected)
+                and intent_has_support
+            )
+
+        else:
+
+            answerable = (
+                hybrid_ok
+                and
+                (
+                    semantic_ok
+                    or strong_lexical_support
+                )
+            )
+
+        # ====================================================
+        # NOT ANSWERABLE
+        # ====================================================
 
         if not answerable:
 
@@ -1672,9 +1851,9 @@ class HybridSearch:
 
             return response
 
-        # ----------------------------------------------------
-        # Answerable
-        # ----------------------------------------------------
+        # ====================================================
+        # ANSWERABLE
+        # ====================================================
 
         response = {
             "answerable": True,
