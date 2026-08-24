@@ -5,6 +5,7 @@
 # ============================================================
 
 import sys
+from datetime import date
 from pathlib import Path
 
 import streamlit as st
@@ -14,7 +15,7 @@ import streamlit as st
 # PROJECT ROOT
 # ============================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -47,11 +48,14 @@ st.set_page_config(
 if "question" not in st.session_state:
     st.session_state.question = ""
 
+if "question_input" not in st.session_state:
+    st.session_state.question_input = st.session_state.question
+
 if "response" not in st.session_state:
     st.session_state.response = None
 
 if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
+    st.session_state.dark_mode = True
 
 
 # ============================================================
@@ -467,6 +471,12 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{
     box-shadow: {shadow_soft};
 }}
 
+div[data-testid="stDateInput"] {{
+    width: min(100%, 320px);
+    margin-left: auto;
+    margin-right: auto;
+}}
+
 
 /* ------------------------------------------------------------
    EXPANDER
@@ -753,9 +763,9 @@ with st.container(key="hero_card", border=True):
 
         question = st.text_input(
             "Policy question",
-            value=st.session_state.question,
             placeholder="Type your policy question...",
             label_visibility="collapsed",
+            key="question_input",
         )
 
     with search_col:
@@ -773,6 +783,26 @@ with st.container(key="hero_card", border=True):
             "✕",
             key="clear",
             use_container_width=True,
+        )
+
+    date_col, event_col = st.columns(2, gap="small")
+
+    with date_col:
+        determination_date = st.date_input(
+            "Determination date",
+            value=None,
+            min_value=date(2020, 1, 1),
+            key="determination_date",
+            help="Used for earnings, thresholds, and sanctions.",
+        )
+
+    with event_col:
+        event_date = st.date_input(
+            "Change/event date",
+            value=None,
+            min_value=date(2020, 1, 1),
+            key="event_date",
+            help="Used for reporting deadlines and changes of circumstance.",
         )
 
     # --------------------------------------------------------
@@ -821,6 +851,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "Who is eligible for the program?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -835,6 +866,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "What are the resource limits?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -849,6 +881,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "Does income affect eligibility?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -863,6 +896,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "Can someone owning a car qualify?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -876,6 +910,7 @@ with st.container(key="hero_card", border=True):
 if clear_clicked:
 
     st.session_state.question = ""
+    st.session_state.question_input = ""
 
     st.session_state.response = None
 
@@ -888,7 +923,7 @@ if clear_clicked:
 
 if search_clicked:
 
-    question = question.strip()
+    question = st.session_state.question_input.strip()
 
     st.session_state.question = question
 
@@ -914,7 +949,17 @@ if search_clicked:
 
                 retrieval_response = (
                     search_engine.search(
-                        question
+                        question,
+                        determination_date=(
+                            determination_date.isoformat()
+                            if determination_date
+                            else None
+                        ),
+                        event_date=(
+                            event_date.isoformat()
+                            if event_date
+                            else None
+                        ),
                     )
                 )
 
@@ -1009,6 +1054,23 @@ if response:
         "",
     )
 
+    temporal = {}
+    if sources and isinstance(sources[0], dict):
+        temporal = sources[0].get("temporal") or {}
+
+    if temporal:
+        status = temporal.get("status", "")
+        labels = {
+            "original_rule": "Original rule",
+            "amended_rule": "Amended rule",
+            "transitional": "Transitional treatment",
+            "date_required": "Date required",
+        }
+        st.caption(
+            f"Policy version: {labels.get(status, status)}"
+            f" | {temporal.get('reason', '')}"
+        )
+
 
     # ========================================================
     # ANSWER HEADER
@@ -1055,7 +1117,7 @@ if response:
     ):
 
         st.markdown(
-            answer
+            answer.replace("$", r"\$")
         )
 
 
@@ -1131,8 +1193,8 @@ if response:
 
                     if source_text:
 
-                        st.write(
-                            source_text
+                        st.markdown(
+                            source_text.replace("$", r"\$")
                         )
 
                     else:

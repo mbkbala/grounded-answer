@@ -2,6 +2,250 @@
 
 ## Brite Spark 2026 — Hackathon Submission
 
+## Quick Start
+
+This project is a Streamlit application. The UI entry point is `app.py`; there is no `main.py` entry point.
+
+### Windows PowerShell
+
+```powershell
+cd D:\hackthon\grounded-answer
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install pytest
+python -m streamlit run app.py
+```
+
+Open `http://localhost:8501` in a browser. Keep the terminal running while using the application. Stop the server with `Ctrl+C`.
+
+For an existing environment, activate it and run only:
+
+```powershell
+python -m streamlit run app.py
+```
+
+### Linux / macOS
+
+```bash
+cd grounded-answer
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pip install pytest
+python -m streamlit run app.py
+```
+
+The first startup may download the `all-MiniLM-L6-v2` Sentence Transformers model. Internet access is needed for that first download. If the semantic dependencies are unavailable, the application falls back to lexical retrieval.
+
+## What This Project Demonstrates
+
+The assistant is designed for policy and claims questions where an answer must be supported by an authoritative document. It:
+
+- Retrieves relevant policy clauses using lexical and semantic signals.
+- Rejects questions outside the policy domain.
+- Validates that retrieved text actually supports the question.
+- Resolves the policy version applicable to a determination or event date.
+- Applies amendment changes to the selected clause text.
+- Returns citations and supporting evidence with the answer.
+- Refuses to guess when evidence is missing or a required date is absent.
+- Surfaces the known reporting-deadline conflict between §4.3.2 and §9.1.4.
+
+## Architecture
+
+```mermaid
+flowchart TD
+      U[User] --> UI[Streamlit UI: app.py]
+      UI --> A[GroundedPolicyAssistant]
+      A --> R[HybridSearch]
+      R --> G[Question type and policy-scope gate]
+      G --> L[BM25 lexical retrieval]
+      G --> S[Sentence Transformers + FAISS semantic retrieval]
+      L --> M[Rank and merge results]
+      S --> M
+      M --> T[PolicyVersion temporal resolution]
+      T --> E[Evidence selection]
+      E --> V[Answerability validation]
+      V --> AG[GroundedAnswerGenerator]
+      AG --> X[Relevant sentence and citation extraction]
+      X --> UI
+```
+
+### Component Responsibilities
+
+| Component | Responsibility |
+| --- | --- |
+| `app.py` | Streamlit UI, dark-mode theme, question/date inputs, answer and evidence display |
+| `src/pipeline/assistant.py` | End-to-end orchestration and response contract |
+| `src/retrieval/hybrid_search.py` | Scope detection, intent routing, BM25 retrieval, semantic retrieval, result ranking, temporal result application |
+| `src/retrieval/search.py` | Basic lexical search implementation |
+| `src/retrieval/semantic_search.py` | Standalone semantic search implementation |
+| `src/reasoning/temporal_policy.py` | Loads amendments and determines active amendments by date |
+| `src/reasoning/policy_version.py` | Resolves clause-specific date rules and applies amendment text replacements |
+| `src/generation/grounded_answer.py` | Validates evidence, selects the best clause, extracts relevant text, and builds citations or safe refusals |
+| `data/clauses.json` | Consolidated policy-manual clauses used as the retrieval corpus |
+| `data/amendments.json` | Structured amendment metadata, effective dates, affected clauses, and changes |
+| `Data pack/` | Human-readable source policy and amendment documents |
+| `tests/` | Retrieval, temporal reasoning, pipeline, and answer-hardening tests |
+
+## End-to-End Request Flow
+
+```mermaid
+sequenceDiagram
+      actor User
+      participant UI as Streamlit UI
+      participant Pipeline as GroundedPolicyAssistant
+      participant Search as HybridSearch
+      participant Version as PolicyVersion
+      participant Generator as GroundedAnswerGenerator
+
+      User->>UI: Enter question and optional dates
+      UI->>Pipeline: ask(question, determination_date, event_date)
+      Pipeline->>Search: search(question, dates)
+      Search->>Search: Classify intent and enforce policy scope
+      Search->>Search: Retrieve and rank policy clauses
+      Search->>Version: Resolve applicable clause version
+      Version-->>Search: Original/amended rule or date-required status
+      Search-->>Pipeline: Evidence, temporal metadata, answerability
+      Pipeline->>Generator: generate(question, retrieval response)
+      Generator->>Generator: Validate evidence and choose supported clause
+      Generator-->>Pipeline: Answer, citations, sources, reason
+      Pipeline-->>UI: Render answer and evidence
+      UI-->>User: Display result or safe refusal
+```
+
+## Date-Aware Decision Flow
+
+```mermaid
+flowchart LR
+      Q[Temporal question] --> C{Which clause?}
+      C -->|§6.4.1 earnings| D[Use determination date]
+      C -->|§4.3.2 or §9.1.4 reporting| E[Use change/event date]
+      C -->|§10.5.3A sanction protection| D
+      D --> F{Date on or after 2026-03-01?}
+      E --> F
+      F -->|No| O[Original rule]
+      F -->|Yes| N[Amended rule]
+      F -->|Missing| R[Safe refusal: date required]
+```
+
+Examples:
+
+| Question | Date input | Expected rule |
+| --- | --- | --- |
+| Earnings disregard | Determination date `2026-02-28` | `$120 per month` |
+| Earnings disregard | Determination date `2026-03-01` | `$175 per month` |
+| Reporting deadline | Event date `2026-02-28` | `10 calendar days` |
+| Reporting deadline | Event date `2026-03-01` | `14 calendar days` |
+
+## Repository Layout
+
+```text
+grounded-answer/
+|-- app.py                         # Streamlit UI entry point
+|-- requirements.txt               # Python dependencies
+|-- data/
+|   |-- clauses.json                # Consolidated policy clauses
+|   `-- amendments.json             # Amendment metadata and changes
+|-- Data pack/                      # Source policy documents
+|-- src/
+|   |-- pipeline/assistant.py       # End-to-end orchestration
+|   |-- retrieval/                  # Lexical, semantic, and hybrid search
+|   |-- reasoning/                  # Temporal and policy-version logic
+|   |-- generation/                 # Grounded answer construction
+|   `-- ingestion/                  # Amendment parsing
+`-- tests/                          # Automated test suites
+```
+
+## Testing
+
+Run the complete suite from the activated virtual environment:
+
+```powershell
+python -m pytest -v
+```
+
+Run focused suites:
+
+```powershell
+python -m pytest tests/test_retrieval.py -v
+python -m pytest tests/test_answer_generation.py -v
+python -m pytest tests/test_answer_generation_hardening.py -v
+python -m pytest tests/test_policy_assistant.py -v
+python -m pytest tests/test_pipeline.py -v
+```
+
+The most important acceptance scenarios are:
+
+1. Normal answer with a citation, such as “Who administers the program?”
+2. Vehicle resource treatment, such as “Can someone owning a car qualify?”
+3. `$120` versus `$175` earnings disregard across the amendment date.
+4. 10 versus 14 calendar days based on the change/event date.
+5. Safe refusal for weather, salary, reimbursement, or missing dates.
+6. §10.5.3A protection when a missed report would have increased the award.
+7. Conflict explanation for the 10-day and 30-day wording.
+
+## Hackathon Demo Script
+
+Use this order for a five-minute demonstration:
+
+1. Ask `Who administers the program?` and show the answer plus §1.1.2.
+2. Ask `Can someone owning a car qualify?` and show §2.4.2.
+3. Ask `What is the earnings disregard?` with determination date `2026-02-28`, then repeat with `2026-03-01`.
+4. Ask `What is the reporting deadline for a change?` with event dates `2026-02-28` and `2026-03-01`.
+5. Ask `What is the weather today?` and show the safe refusal.
+6. Ask `Why do the reporting deadlines say 10 and 30 days?` and show both cited clauses.
+
+The key message is: the assistant answers from evidence, chooses the rule valid for the relevant date, and does not invent unsupported facts.
+
+## Troubleshooting
+
+### `No module named streamlit` or `No module named pytest`
+
+The command is using a different Python interpreter. Activate the project environment first, then install the packages:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install pytest
+```
+
+Confirm the interpreter and packages:
+
+```powershell
+python -c "import sys; print(sys.executable)"
+python -m streamlit --version
+python -m pytest --version
+```
+
+### PowerShell blocks virtual-environment activation
+
+Run PowerShell as your normal user and allow local scripts for the current user:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+Then activate the environment again.
+
+### Port 8501 is already in use
+
+Start Streamlit on another port:
+
+```powershell
+python -m streamlit run app.py --server.port 8502
+```
+
+### The semantic model cannot download
+
+Check internet access and retry. The retrieval engine is designed to fall back to lexical retrieval when Sentence Transformers or FAISS cannot be imported, but semantic ranking may be less accurate.
+
+## Safety and Limitations
+
+This is a demonstration system, not legal advice or a replacement for official case review. It can only answer from the documents in `data/` and the configured source pack. Results depend on document completeness, parsing quality, retrieval quality, and correct date input. A missing or invalid date intentionally causes a safe refusal for date-dependent clauses.
+
+Do not commit API keys, credentials, local model caches, or other secrets. Review `.gitignore` before publishing the repository.
+
 A **date-aware, evidence-grounded policy assistant** designed to answer policy and claims-related questions using authoritative policy documents while avoiding unsupported or hallucinated answers.
 
 The system retrieves relevant policy evidence, determines whether the question is answerable from the available documents, identifies the policy version applicable to the **date of the claim**, and generates an answer grounded only in the retrieved evidence.
@@ -352,7 +596,7 @@ Activate the virtual environment first.
 Then start the Streamlit application:
 
 ```powershell
-streamlit run <YOUR_STREAMLIT_FILE>.py
+streamlit run app.py
 ```
 
 For example, if the main application is `app.py`:
@@ -693,7 +937,7 @@ python -m venv .venv
 
 pip install -r requirements.txt
 
-streamlit run <YOUR_STREAMLIT_FILE>.py
+streamlit run app.py
 ```
 
 Then open the displayed Streamlit URL in a browser.
