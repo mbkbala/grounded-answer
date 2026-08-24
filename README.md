@@ -368,7 +368,7 @@ grounded-answer/
 |-- app.py
 |-- requirements.txt
 |-- AI-USAGE.md
-|-- decision.md
+|-- DECISION.md
 |-- data/
 |   |-- clauses.json
 |   `-- amendments.json
@@ -402,8 +402,9 @@ grounded-answer/
 
 ### Missing Streamlit or pytest
 
+Run these commands from the repository root:
+
 ```powershell
-cd D:\hackthon\grounded-answer
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m pip install pytest

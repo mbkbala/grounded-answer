@@ -265,7 +265,7 @@ def get_question_type(question: str) -> str:
     ):
         return "reporting"
 
-    if any(term in q for term in [
+    if any(re.search(rf"\b{term}\b", q) for term in [
         "car", "vehicle", "automobile", "truck", "motorcycle",
     ]):
         return "vehicle"
