@@ -477,6 +477,34 @@ div[data-testid="stDateInput"] {{
     margin-right: auto;
 }}
 
+div[data-testid="stDateInput"] label {{
+    color: {text} !important;
+    font-family: var(--font-body);
+    font-size: 0.86rem;
+    font-weight: 700;
+}}
+
+div[data-testid="stDateInput"] input {{
+    background-color: {input_bg} !important;
+    color: {text} !important;
+    border-color: {border} !important;
+    color-scheme: {"dark" if st.session_state.dark_mode else "light"};
+}}
+
+div[data-testid="stDateInput"] input::placeholder {{
+    color: {secondary} !important;
+    opacity: 1;
+}}
+
+div[data-testid="stDateInput"] input:focus {{
+    border-color: {border_hover} !important;
+    box-shadow: 0 0 0 3px {brand_soft} !important;
+}}
+
+div[data-testid="stDateInput"] button {{
+    color: {brand} !important;
+}}
+
 
 /* ------------------------------------------------------------
    EXPANDER
