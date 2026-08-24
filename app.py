@@ -48,11 +48,14 @@ st.set_page_config(
 if "question" not in st.session_state:
     st.session_state.question = ""
 
+if "question_input" not in st.session_state:
+    st.session_state.question_input = st.session_state.question
+
 if "response" not in st.session_state:
     st.session_state.response = None
 
 if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
+    st.session_state.dark_mode = True
 
 
 # ============================================================
@@ -468,6 +471,12 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{
     box-shadow: {shadow_soft};
 }}
 
+div[data-testid="stDateInput"] {{
+    width: min(100%, 320px);
+    margin-left: auto;
+    margin-right: auto;
+}}
+
 
 /* ------------------------------------------------------------
    EXPANDER
@@ -754,9 +763,9 @@ with st.container(key="hero_card", border=True):
 
         question = st.text_input(
             "Policy question",
-            value=st.session_state.question,
             placeholder="Type your policy question...",
             label_visibility="collapsed",
+            key="question_input",
         )
 
     with search_col:
@@ -842,6 +851,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "Who is eligible for the program?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -856,6 +866,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "What are the resource limits?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -870,6 +881,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "Does income affect eligibility?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -884,6 +896,7 @@ with st.container(key="hero_card", border=True):
             st.session_state.question = (
                 "Can someone owning a car qualify?"
             )
+            st.session_state.question_input = st.session_state.question
 
             st.session_state.response = None
 
@@ -897,6 +910,7 @@ with st.container(key="hero_card", border=True):
 if clear_clicked:
 
     st.session_state.question = ""
+    st.session_state.question_input = ""
 
     st.session_state.response = None
 
@@ -909,7 +923,7 @@ if clear_clicked:
 
 if search_clicked:
 
-    question = question.strip()
+    question = st.session_state.question_input.strip()
 
     st.session_state.question = question
 

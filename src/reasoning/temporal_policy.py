@@ -36,7 +36,8 @@ def normalize_clause_reference(clause_id: str) -> str:
 
     clause_id = str(clause_id).strip()
 
-    # Fix common UTF-8 mojibake forms.
+    # Fix common UTF-8 mojibake forms and replacement characters.
+    clause_id = clause_id.replace("\ufffd", "\u00a7")
     clause_id = clause_id.replace("Ã‚Â§", "§")
     clause_id = clause_id.replace("Â§", "§")
 
